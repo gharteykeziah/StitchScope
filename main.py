@@ -8,6 +8,7 @@ from pattern_reader import read_row, read_full_row
 from validator import check_full_row
 from sizing import find_valid_stitch_count, greedy_stitch_count
 from vision import get_vision_proposal, process_proposal
+from renderer import render_row
 
 
 def run_demo():
@@ -26,6 +27,11 @@ def run_demo():
     print("Row 1 repeat:", row_1["repeat"])
     print("Row 2 setup:", row_2["setup"])
     print("Row 2 repeat:", row_2["repeat"])
+
+    print()
+    print("== ...and in plain English, not just raw steps ==")
+    print("Row 1:", render_row(row_1, repeat_count=7))
+    print("Row 2:", render_row(row_2, repeat_count=14))
 
     print()
     print("== Validating against a real foundation chain ==")

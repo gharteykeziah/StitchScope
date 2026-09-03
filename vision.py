@@ -12,6 +12,7 @@ means replacing get_vision_proposal()'s body; nothing else has to change.
 
 from validator import check_full_row
 from schema import validate_proposal
+from renderer import render_row
 
 
 def get_vision_proposal(which_example="good"):
@@ -82,3 +83,5 @@ def process_proposal(proposal, stitches_available):
         status = "VALID" if result["valid"] else "REJECTED"
         print(f"  Row {i} (setup: {setup_text} | repeat: {repeat_text} x{row['repeat_count']}) "
               f"-> {status} (used {result['consumed']} of {stitches_available} available)")
+        if result["valid"]:
+            print(f"    In plain English: {render_row(row, row['repeat_count'])}")
