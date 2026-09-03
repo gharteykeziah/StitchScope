@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 
+from validator import STITCH_RULES
+
 
 class TokenType(Enum):
     STITCH = "STITCH"
@@ -31,7 +33,10 @@ class TokenizeError(Exception):
     pass
 
 
-KNOWN_STITCHES = {"CH", "SC", "HDC", "DC", "SLST", "SKIP", "INC", "DEC"}
+# The vocabulary of known stitches lives in exactly one place: validator.py's
+# STITCH_RULES. Deriving it here instead of re-listing the 8 names means
+# there's no second copy that could quietly drift out of sync.
+KNOWN_STITCHES = set(STITCH_RULES.keys())
 
 _TOKEN_PATTERN = re.compile(r"""
     (?P<WS>\s+)

@@ -6,9 +6,13 @@ JSON Schema library -- the .json file is the language-agnostic reference,
 this module is what actually runs.
 """
 
+from validator import STITCH_RULES
+
 SCHEMA_VERSION = "1.0.0"
 
-KNOWN_STITCHES = {"CH", "SC", "HDC", "DC", "SLST", "SKIP", "INC", "DEC"}
+# Same vocabulary as validator.py's STITCH_RULES -- one source of truth
+# instead of a second hardcoded list that could drift out of sync.
+KNOWN_STITCHES = set(STITCH_RULES.keys())
 
 
 def _validate_step(step, path, errors):
