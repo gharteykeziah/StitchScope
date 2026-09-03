@@ -4,11 +4,11 @@ read it, validate it, size it, and check an AI proposal against the
 validator.
 """
 
-from pattern_reader import read_row, read_full_row
-from validator import check_full_row
-from sizing import find_valid_stitch_count, greedy_stitch_count
-from vision import get_vision_proposal, process_proposal
-from renderer import render_row
+from engine.pattern_reader import read_row, read_full_row
+from engine.validator import check_full_row
+from engine.sizing import find_valid_stitch_count, greedy_stitch_count
+from engine.vision import get_vision_proposal, process_proposal
+from engine.renderer import render_row
 
 
 def run_demo():

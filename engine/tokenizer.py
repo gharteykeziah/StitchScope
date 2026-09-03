@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 
-from validator import STITCH_RULES
+from engine.validator import STITCH_RULES
 
 
 class TokenType(Enum):

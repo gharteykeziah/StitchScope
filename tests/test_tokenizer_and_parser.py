@@ -13,9 +13,9 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from tokenizer import tokenize, TokenType, TokenizeError
-from parser import parse_steps, ParseError
-from pattern_reader import read_row, read_full_row
+from engine.tokenizer import tokenize, TokenType, TokenizeError
+from engine.parser import parse_steps, ParseError
+from engine.pattern_reader import read_row, read_full_row
 
 
 class TokenizerTests(unittest.TestCase):

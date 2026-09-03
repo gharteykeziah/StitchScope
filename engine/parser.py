@@ -9,7 +9,7 @@ exactly what was expected and where, instead of a generic Python error
 from indexing into a list that turned out to be the wrong length.
 """
 
-from tokenizer import tokenize, TokenType
+from engine.tokenizer import tokenize, TokenType
 
 
 class ParseError(Exception):

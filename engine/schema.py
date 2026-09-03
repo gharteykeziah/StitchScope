@@ -1,12 +1,12 @@
 """
 Validates a vision-model proposal against the StitchScope proposal schema
-(schema/proposal_schema_v1.json). The project has no external dependencies,
+(contracts/proposal_schema_v1.json). The project has no external dependencies,
 so this enforces the same rules in plain Python rather than pulling in a
-JSON Schema library -- the .json file is the language-agnostic reference,
-this module is what actually runs.
+JSON Schema library -- contracts/proposal_schema_v1.json is the language-agnostic
+reference, this module is what actually runs.
 """
 
-from validator import STITCH_RULES
+from engine.validator import STITCH_RULES
 
 SCHEMA_VERSION = "1.0.0"
 

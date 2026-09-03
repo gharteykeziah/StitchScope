@@ -17,9 +17,9 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pattern_reader import read_full_row
-from validator import check_full_row
-from schema import validate_proposal
+from engine.pattern_reader import read_full_row
+from engine.validator import check_full_row
+from engine.schema import validate_proposal
 
 GOLDEN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "golden")
 
@@ -63,7 +63,7 @@ class ProposalSchemaTests(unittest.TestCase):
         # the "bad" one describes a row that fails validation later --
         # schema-valid and structurally-valid-against-real-yarn are
         # different checks.
-        from vision import get_vision_proposal
+        from engine.vision import get_vision_proposal
 
         for which in ("good", "bad"):
             proposal = get_vision_proposal(which)

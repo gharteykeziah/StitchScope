@@ -3,7 +3,7 @@
   "$id": "https://stitchscope.local/schema/proposal_v1.json",
   "title": "StitchScope Vision Proposal",
   "schemaVersion": "1.0.0",
-  "description": "The structured shape a vision-model stitch-pattern proposal must conform to before StitchScope's reconstruction engine will validate it. schema.py enforces these same rules in plain Python.",
+  "description": "The structured shape a vision-model stitch-pattern proposal must conform to before StitchScope's reconstruction engine will validate it. engine/schema.py enforces these same rules in plain Python.",
   "type": "object",
   "required": ["stitch_family", "confidence", "rows", "uncertain_fields"],
   "properties": {

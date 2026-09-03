@@ -29,7 +29,7 @@ repeated border round).
 
 ## Current implementation
 
-`pattern_reader.read_full_row(setup_text, repeat_text)` takes the two step
+`engine/pattern_reader.py`'s `read_full_row(setup_text, repeat_text)` takes the two step
 lists as separate string arguments rather than one row string with a
 delimiter, since that maps more directly onto how a row is actually
 described ("this is the one-time part, this is what repeats"). The grammar
@@ -50,7 +50,7 @@ is the concrete API.
 | DEC  | 2 | 1 | Decrease — works two stitches together into one |
 
 This table is the single source of truth for the stitch simulator in
-`validator.py` (`STITCH_RULES`) — if the two ever disagree, the code is
+`engine/validator.py` (`STITCH_RULES`) — if the two ever disagree, the code is
 right and this table is out of date; fix the table.
 
 ## Worked example

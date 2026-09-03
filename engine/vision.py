@@ -10,9 +10,9 @@ would against a real model's output. Swapping in a real API call later
 means replacing get_vision_proposal()'s body; nothing else has to change.
 """
 
-from validator import check_full_row
-from schema import validate_proposal
-from renderer import render_row
+from engine.validator import check_full_row
+from engine.schema import validate_proposal
+from engine.renderer import render_row
 
 
 def get_vision_proposal(which_example="good"):

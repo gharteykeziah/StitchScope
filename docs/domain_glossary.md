@@ -57,7 +57,7 @@ engine must always produce this exact result.
 **Proposal** — the structured guess a vision-model perception layer
 returns for a photographed row: which stitch family, what the setup and
 repeat look like, a confidence score, and which fields it's unsure about.
-Defined formally in `schema/proposal_schema_v1.json`.
+Defined formally in `contracts/proposal_schema_v1.json`.
 
 **Confidence** — the proposal's own self-reported certainty, 0 to 1. Not
 validated for correctness by the engine — it's metadata about the guess,
@@ -69,6 +69,6 @@ not confident about. An empty list means high confidence in everything
 proposed.
 
 **Valid / invalid row** — the outcome of running a row through
-`validator.check_full_row()`: valid means it consumes no more stitches
+`engine/validator.py`'s `check_full_row()`: valid means it consumes no more stitches
 than are actually available; invalid means it doesn't, and the row as
 proposed cannot really be crocheted as described.

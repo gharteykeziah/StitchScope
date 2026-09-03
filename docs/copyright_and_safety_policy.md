@@ -34,7 +34,7 @@ rewrite any designer's paid written pattern.
    stitch count in a low-resolution area), the system says what it
    can't determine instead of inventing a confident-sounding answer.
    This is enforced structurally: every proposal carries an
-   `uncertain_fields` list (see `schema/proposal_schema_v1.json`), and a
+   `uncertain_fields` list (see `contracts/proposal_schema_v1.json`), and a
    proposal with unresolved uncertainty about a load-bearing detail
    should prompt a follow-up question rather than a final answer.
 

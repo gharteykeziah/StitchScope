@@ -6,7 +6,7 @@ the public API everything else imports, plus the setup+repeat/whole-
 pattern shaping built on top of a single parsed row.
 """
 
-from parser import parse_steps
+from engine.parser import parse_steps
 
 
 def read_row(row_text):

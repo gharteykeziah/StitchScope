@@ -12,7 +12,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from renderer import render_step, render_steps, render_row
+from engine.renderer import render_step, render_steps, render_row
 
 
 class RenderStepTests(unittest.TestCase):
