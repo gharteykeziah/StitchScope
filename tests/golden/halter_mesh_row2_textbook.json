@@ -1,0 +1,16 @@
+{
+  "name": "halter_mesh_row2_textbook",
+  "description": "Row 2 of the mesh panel, worked into row 1's textbook 20-chain result (15 stitches produced).",
+  "source": "main.py demo",
+  "input": {
+    "setup_text": "DC 1, CH 1",
+    "repeat_text": "CH 1, DC 1",
+    "repeat_count": 14,
+    "stitches_available": 15
+  },
+  "expected": {
+    "consumed": 15,
+    "produced": 30,
+    "valid": true
+  }
+}

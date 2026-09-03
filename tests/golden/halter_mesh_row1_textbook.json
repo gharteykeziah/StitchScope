@@ -1,0 +1,16 @@
+{
+  "name": "halter_mesh_row1_textbook",
+  "description": "Row 1 of the mesh panel on a larger, idealized foundation chain (20 stitches) -- the main.py demo's worked example, kept as a regression fixture.",
+  "source": "main.py demo",
+  "input": {
+    "setup_text": "SKIP 5, DC 1",
+    "repeat_text": "CH 1, SKIP 1, DC 1",
+    "repeat_count": 7,
+    "stitches_available": 20
+  },
+  "expected": {
+    "consumed": 20,
+    "produced": 15,
+    "valid": true
+  }
+}

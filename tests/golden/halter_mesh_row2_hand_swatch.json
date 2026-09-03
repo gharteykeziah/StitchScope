@@ -1,0 +1,17 @@
+{
+  "name": "halter_mesh_row2_hand_swatch",
+  "description": "Row 2 of the halter/corset top's mesh panel (the turning-chain row), worked into row 1's real 12-chain hand swatch.",
+  "source": "concierge validation, halter/corset top, mesh panel, 2026-09-03",
+  "input": {
+    "setup_text": "DC 1, CH 1",
+    "repeat_text": "CH 1, DC 1",
+    "repeat_count": 6,
+    "stitches_available": 7
+  },
+  "expected": {
+    "consumed": 7,
+    "produced": 14,
+    "valid": true
+  },
+  "known_discrepancy": "Same DC-count gap as row 1 -- see halter_mesh_row1_hand_swatch.json."
+}

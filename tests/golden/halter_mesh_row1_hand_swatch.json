@@ -1,0 +1,17 @@
+{
+  "name": "halter_mesh_row1_hand_swatch",
+  "description": "Row 1 of the halter/corset top's mesh panel, matching the real 12-chain swatch made and measured by hand (see data/concierge_log.csv).",
+  "source": "concierge validation, halter/corset top, mesh panel, 2026-09-03",
+  "input": {
+    "setup_text": "SKIP 5, DC 1",
+    "repeat_text": "CH 1, SKIP 1, DC 1",
+    "repeat_count": 3,
+    "stitches_available": 12
+  },
+  "expected": {
+    "consumed": 12,
+    "produced": 7,
+    "valid": true
+  },
+  "known_discrepancy": "The hand swatch produced 5 DC stitches, both on this row and on row 2. This model's 'produced' count (7) includes both DC stitches and chain-1 spaces as workable points -- the DC-only count it implies (1 setup + 3 repeat = 4) does not match the real count of 5. Not yet root-caused; logged in data/concierge_log.csv rather than silently corrected."
+}

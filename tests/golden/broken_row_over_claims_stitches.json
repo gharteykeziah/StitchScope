@@ -1,0 +1,16 @@
+{
+  "name": "broken_row_over_claims_stitches",
+  "description": "A deliberately broken row -- claims 7 repeats of a 5-stitch-consuming unit on top of a 6-stitch setup, against only 20 stitches available. Exists to prove the validator actually rejects bad input, not just accepts good input.",
+  "source": "main.py demo",
+  "input": {
+    "setup_text": "SKIP 5, DC 1",
+    "repeat_text": "DC 5",
+    "repeat_count": 7,
+    "stitches_available": 20
+  },
+  "expected": {
+    "consumed": 41,
+    "produced": 36,
+    "valid": false
+  }
+}
