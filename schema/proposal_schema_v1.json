@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://stitchscope.local/schema/proposal_v1.json",
+  "title": "StitchScope Vision Proposal",
+  "schemaVersion": "1.0.0",
+  "description": "The structured shape a vision-model stitch-pattern proposal must conform to before StitchScope's reconstruction engine will validate it. schema.py enforces these same rules in plain Python.",
+  "type": "object",
+  "required": ["stitch_family", "confidence", "rows", "uncertain_fields"],
+  "properties": {
+    "stitch_family": {
+      "type": "string",
+      "description": "Human-readable name for the guessed stitch pattern, e.g. 'filet mesh'."
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "The model's own confidence in this proposal, 0-1. Metadata about the guess, not validated for correctness."
+    },
+    "rows": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/row" }
+    },
+    "uncertain_fields": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Names of fields the model is unsure about, e.g. 'stitch_count'. Empty list means confident in everything proposed."
+    }
+  },
+  "definitions": {
+    "row": {
+      "type": "object",
+      "required": ["setup", "repeat", "repeat_count"],
+      "properties": {
+        "setup": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/step" },
+          "description": "The one-time steps worked before the repeat starts. Can be empty."
+        },
+        "repeat": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/step" },
+          "description": "The unit that repeats across the rest of the row. Never empty."
+        },
+        "repeat_count": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "How many times the proposal claims the repeat is worked. The engine checks this claim against stitches actually available -- it is not free to adjust it to make the row fit."
+        }
+      }
+    },
+    "step": {
+      "type": "object",
+      "required": ["stitch", "count"],
+      "properties": {
+        "stitch": {
+          "type": "string",
+          "enum": ["CH", "SC", "HDC", "DC", "SLST", "SKIP", "INC", "DEC"]
+        },
+        "count": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}
