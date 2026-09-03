@@ -1,24 +1,29 @@
-StitchScope
+# StitchScope
+
 Read a crochet pattern, check the math, size it to fit.
 
 StitchScope parses crochet rows written in a simple text format, checks that each row's stitch counts actually work against the stitches available (foundation chain or prior row), and solves for the stitch count closest to a target measurement without breaking a pattern's repeat. It can also validate stitch proposals coming from a vision model against the same rules.
 
-Tech Stack
+## Tech Stack
 - Python 3 (standard library only, no external dependencies)
 
-Features
+## Features
 - 🧶 Reads rows written as setup + repeat steps (e.g. `CH 1, SKIP 1, DC 1`)
 - ✅ Validates stitches consumed/produced against a foundation chain or the previous row
 - 📏 Solves for the stitch count closest to a target width without breaking the repeat
 - 🤖 Checks AI/vision-model stitch proposals against the same validation rules
 - 🚫 Catches broken rows that don't add up
 
-Local Development
+## Local Development
 Requirements: Python 3.8+
 
+```
 # Clone the repo
 git clone https://github.com/gharteykeziah/StitchScope.git
 cd StitchScope
 
 # Run the demo
-python main.py
+python3 main.py
+```
+
+Runs the full demo end to end and prints each step's result straight to your terminal.
