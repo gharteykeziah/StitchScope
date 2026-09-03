@@ -57,11 +57,11 @@ def run_demo():
 
     print()
     print("== AI proposes, we validate ==")
-    print("-- Example 1: a good proposal --")
-    process_proposal(get_vision_proposal("good"), stitches_available=2)
+    print("-- Example 1: a good proposal (a real repeat that fits) --")
+    process_proposal(get_vision_proposal("good"), stitches_available=foundation_chain)
     print()
-    print("-- Example 2: a bad proposal (should be rejected) --")
-    process_proposal(get_vision_proposal("bad"), stitches_available=2)
+    print("-- Example 2: a bad proposal (claims more repeats than fit) --")
+    process_proposal(get_vision_proposal("bad"), stitches_available=foundation_chain)
 
 
 if __name__ == "__main__":
