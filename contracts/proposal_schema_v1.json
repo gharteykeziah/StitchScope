@@ -5,7 +5,12 @@
   "schemaVersion": "1.0.0",
   "description": "The structured shape a vision-model stitch-pattern proposal must conform to before StitchScope's reconstruction engine will validate it. engine/schema.py enforces these same rules in plain Python.",
   "type": "object",
-  "required": ["stitch_family", "confidence", "rows", "uncertain_fields"],
+  "required": [
+    "stitch_family",
+    "confidence",
+    "rows",
+    "uncertain_fields"
+  ],
   "properties": {
     "stitch_family": {
       "type": "string",
@@ -20,28 +25,40 @@
     "rows": {
       "type": "array",
       "minItems": 1,
-      "items": { "$ref": "#/definitions/row" }
+      "items": {
+        "$ref": "#/definitions/row"
+      }
     },
     "uncertain_fields": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Names of fields the model is unsure about, e.g. 'stitch_count'. Empty list means confident in everything proposed."
     }
   },
   "definitions": {
     "row": {
       "type": "object",
-      "required": ["setup", "repeat", "repeat_count"],
+      "required": [
+        "setup",
+        "repeat",
+        "repeat_count"
+      ],
       "properties": {
         "setup": {
           "type": "array",
-          "items": { "$ref": "#/definitions/step" },
+          "items": {
+            "$ref": "#/definitions/step"
+          },
           "description": "The one-time steps worked before the repeat starts. Can be empty."
         },
         "repeat": {
           "type": "array",
           "minItems": 1,
-          "items": { "$ref": "#/definitions/step" },
+          "items": {
+            "$ref": "#/definitions/step"
+          },
           "description": "The unit that repeats across the rest of the row. Never empty."
         },
         "repeat_count": {
@@ -53,14 +70,30 @@
     },
     "step": {
       "type": "object",
-      "required": ["stitch", "count"],
+      "required": [
+        "stitch",
+        "count"
+      ],
       "properties": {
         "stitch": {
           "type": "string",
-          "enum": ["CH", "SC", "HDC", "DC", "SLST", "SKIP", "INC", "DEC"]
+          "enum": [
+            "CH",
+            "SC",
+            "HDC",
+            "DC",
+            "SLST",
+            "SKIP",
+            "INC",
+            "DEC"
+          ]
         },
-        "count": { "type": "integer", "minimum": 1 }
+        "count": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     }
-  }
+  },
+  "status": "Superseded by proposal_schema_v2.json on 2026-09-04 -- v1 assumed one stitch pattern per photo; the real product needs to detect 2-3 distinct stitch regions in a single garment photo. Kept for history, not used by engine/schema.py anymore."
 }

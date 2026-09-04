@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://stitchscope.local/schema/proposal_v2.json",
+  "title": "StitchScope Vision Proposal (multi-region)",
+  "schemaVersion": "2.0.0",
+  "description": "The structured shape a vision-model response must conform to before StitchScope's reconstruction engine will validate it. Supersedes proposal_schema_v1.json: v1 assumed one stitch pattern per photo, but a real garment photo can show 2-3 different stitch regions (e.g. a fan panel and a mesh panel), so v2 makes 'regions' the top-level list and moves stitch_family/confidence/rows/uncertain_fields down to each region. engine/schema.py enforces these same rules in plain Python.",
+  "type": "object",
+  "required": ["regions"],
+  "properties": {
+    "photo_id": {
+      "type": "string",
+      "description": "Optional label for the source photo/crop this proposal came from."
+    },
+    "regions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/region" },
+      "description": "One entry per distinct stitch pattern detected in the photo."
+    }
+  },
+  "definitions": {
+    "region": {
+      "type": "object",
+      "required": ["region_label", "stitch_family", "confidence", "rows", "uncertain_fields"],
+      "properties": {
+        "region_label": {
+          "type": "string",
+          "description": "Where this stitch pattern is on the garment, e.g. 'center panel' or 'fan panel (left)'."
+        },
+        "stitch_family": {
+          "type": "string",
+          "description": "Human-readable name for the guessed stitch pattern, e.g. 'filet mesh'."
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "The model's own confidence in this region's guess, 0-1. Metadata about the guess, not validated for correctness."
+        },
+        "rows": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/row" }
+        },
+        "uncertain_fields": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Names of fields the model is unsure about for this region, e.g. 'stitch_count'. Empty list means confident in everything proposed for this region."
+        }
+      }
+    },
+    "row": {
+      "type": "object",
+      "required": ["setup", "repeat", "repeat_count"],
+      "properties": {
+        "setup": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/step" },
+          "description": "The one-time steps worked before the repeat starts. Can be empty."
+        },
+        "repeat": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/step" },
+          "description": "The unit that repeats across the rest of the row. Never empty."
+        },
+        "repeat_count": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "How many times the proposal claims the repeat is worked. The engine checks this claim against stitches actually available -- it is not free to adjust it to make the row fit."
+        }
+      }
+    },
+    "step": {
+      "type": "object",
+      "required": ["stitch", "count"],
+      "properties": {
+        "stitch": {
+          "type": "string",
+          "enum": ["CH", "SC", "HDC", "DC", "SLST", "SKIP", "INC", "DEC"]
+        },
+        "count": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

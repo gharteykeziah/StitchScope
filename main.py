@@ -62,12 +62,12 @@ def run_demo():
     print(f"Naive round-up: {naive_count}  (off by {abs(naive_count - target)})")
 
     print()
-    print("== AI proposes, we validate ==")
-    print("-- Example 1: a good proposal (a real repeat that fits) --")
-    process_proposal(get_vision_proposal("good"), stitches_available=foundation_chain)
+    print("== AI proposes multiple stitch regions from one photo, we validate each ==")
+    print("-- Example 1: two regions, both valid --")
+    process_proposal(get_vision_proposal("good"), stitches_available=[foundation_chain, 20])
     print()
-    print("-- Example 2: a bad proposal (claims more repeats than fit) --")
-    process_proposal(get_vision_proposal("bad"), stitches_available=foundation_chain)
+    print("-- Example 2: two regions from the same photo, one valid and one not --")
+    process_proposal(get_vision_proposal("mixed"), stitches_available=foundation_chain)
 
 
 if __name__ == "__main__":

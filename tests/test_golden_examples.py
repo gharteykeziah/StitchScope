@@ -58,22 +58,30 @@ class GoldenExampleTests(unittest.TestCase):
 class ProposalSchemaTests(unittest.TestCase):
     """The vision-proposal stand-ins should conform to the schema they're supposed to model."""
 
-    def test_good_and_bad_stand_in_proposals_are_schema_valid(self):
+    def test_good_and_mixed_stand_in_proposals_are_schema_valid(self):
         # Both example proposals are internally well-formed even though
-        # the "bad" one describes a row that fails validation later --
-        # schema-valid and structurally-valid-against-real-yarn are
-        # different checks.
+        # the "mixed" one contains a region whose row fails validation
+        # later -- schema-valid and structurally-valid-against-real-yarn
+        # are different checks. Each is a multi-region proposal (v2
+        # schema): a photo can show more than one distinct stitch pattern.
         from engine.vision import get_vision_proposal
 
-        for which in ("good", "bad"):
+        for which in ("good", "mixed"):
             proposal = get_vision_proposal(which)
             errors = validate_proposal(proposal)
             self.assertEqual(errors, [], f"'{which}' proposal should be schema-valid, got: {errors}")
+            self.assertGreaterEqual(len(proposal["regions"]), 2,
+                                     f"'{which}' proposal should demonstrate multiple regions")
 
     def test_schema_rejects_a_malformed_proposal(self):
-        malformed = {"stitch_family": "mystery stitch", "confidence": 1.5, "rows": []}
+        malformed = {"photo_id": "x.jpg"}  # missing 'regions' entirely
         errors = validate_proposal(malformed)
-        self.assertTrue(len(errors) > 0, "a proposal missing fields / with an out-of-range confidence should fail")
+        self.assertTrue(len(errors) > 0, "a proposal missing 'regions' should fail")
+
+    def test_schema_rejects_a_region_missing_required_fields(self):
+        malformed = {"regions": [{"stitch_family": "mystery stitch", "confidence": 1.5}]}
+        errors = validate_proposal(malformed)
+        self.assertTrue(len(errors) > 0, "a region missing region_label/rows/uncertain_fields should fail")
 
 
 if __name__ == "__main__":
