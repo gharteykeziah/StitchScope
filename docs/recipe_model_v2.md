@@ -1,14 +1,21 @@
-# StitchScope Recipe Model v2 — Design (Phase 1)
+# StitchScope Recipe Model v2 — Design (Phase 1), now with schema enforcement (Phase 2) and a foundation calculator (Phase 3)
 
-**Status: design only.** Nothing in this document is wired into production
-code. `contracts/stitch_recipe_schema_v1.json`, `engine/schema.py`,
-`engine/vision.py`, `engine/swatch.py`, `engine/confirmed_patterns.py`,
-and `run_real_photo.py` are all unchanged. This document exists to name
-concepts precisely before anything is rebuilt around them — that
-rebuilding is Phase 2 and later, not covered here.
+**Status: still not wired into the production photo pathway.**
+`engine/vision.py`, `engine/swatch.py` (its own, different v1 foundation
+logic), `engine/confirmed_patterns.py`, `run_real_photo.py`, and
+`contracts/stitch_recipe_schema_v1.json` are all unchanged by anything
+below. What *has* been built since this document was first written:
+Phase 2 added `contracts/stitch_recipe_schema_v2.json` and
+`engine/schema.py`'s `validate_recipe_v2()`, actually enforcing the
+shape this document designs. Phase 3 added
+`engine/foundation.py`'s `calculate_foundation()` — see "Phase 3: the
+foundation calculator" near the end of this document for what it does
+and doesn't do. The rest of this document (sections 1–11) is the
+original Phase 1 design discussion, left as written; only this status
+note and the Phase 3 section are new.
 
 *This is the corrected revision of the Phase 1 design. See the changelog
-at the bottom for what this correction pass fixed and why.*
+at the bottom for what that correction pass fixed and why.*
 
 ## Why this exists
 
@@ -427,6 +434,48 @@ Phase 1 is supposed to surface clearly enough to go test by hand,
 rather than continue guessing around in code. **Phase 2 must not guess
 at any of these** — each requires either a physical swatch or an
 explicit, separate decision recorded the way section 7 requires.
+
+## Phase 3: the foundation calculator
+
+`engine/foundation.py`'s **`calculate_foundation(recipe, requested_repeat_count)`**
+implements the formula from section 2, exactly as designed there:
+
+```
+foundation_count = repeat_multiple * requested_repeat_count + additional_chains
+```
+
+**Its two inputs**: a complete v2 recipe dict, and `requested_repeat_count`
+— a plain positive int the *caller* chooses. It is never read from the
+recipe itself (there is no `repeat_count` field anywhere in the v2
+shape), the same way `engine/swatch.py`'s older, unrelated
+`build_test_foundation()` already never trusts an AI-claimed repeat
+count for the v1 pathway.
+
+**Its returned breakdown** is a dict with five keys: `repeat_multiple`,
+`requested_repeat_count`, `repeated_chains` (`repeat_multiple *
+requested_repeat_count`), `additional_chains`, and `foundation_count`
+(`repeated_chains + additional_chains`) — every number that went into
+the result, not just the final total.
+
+**Calculating a recipe whose `verification.status` is `REJECTED` or
+`AI_PROPOSED` does not establish crochet correctness.**
+`calculate_foundation()` only requires that the recipe pass
+`validate_recipe_v2()` (structural shape) — it does not look at
+`verification.status` at all. The known-bad example
+(`contracts/examples/stitch_recipe_v2_known_bad_ai_example.json`)
+calculates to `foundation_count: 9` for 6 repeats exactly like any other
+structurally valid recipe would; that number is an honest evaluation of
+its stored formula, not a claim that the recipe describes real filet
+mesh — it remains `REJECTED`, for the reasons in section 8, regardless
+of what any calculation on it produces.
+
+**This module is not connected to the production photo pathway yet.**
+`run_real_photo.py`, `engine/vision.py`, and `engine/swatch.py`'s own
+v1 `build_test_foundation()` are all unchanged and untouched by this
+addition. Nothing yet compares `calculate_foundation()`'s result against
+what `row_1` actually consumes — that comparison, and everything about
+typed stitch positions, the swatch planner, and physical confirmation,
+is later-phase work this document does not cover.
 
 ## Changelog — first correction pass
 
