@@ -1,5 +1,5 @@
 {
-  "_comment": "KNOWN-BAD / REJECTED regression example. This is a real API proposal (from data/confirmed_stitch_patterns.json's 'filet mesh' entry, produced by engine/vision.py's get_stitch_recipe() during real testing on 2026-09-05), preserved here so it is not lost or silently reproposed as new. It is NOT the canonical v2 reference example -- see contracts/examples/stitch_recipe_v2_structural_example.json for a different, non-rejected recipe candidate for the SAME broad stitch-family label (filet mesh). Its status is REJECTED, not AI_PROPOSED: its row-1 repeat conflicts with the specific target construction being tested (the halter/corset top's open filet-mesh grid) -- it lacks the per-repeat skipped foundation chain that construction needs to create its open grid, so it cannot produce the intended structure. That structural mismatch is sufficient basis to reject it without needing a fresh physical swatch. This is not a claim that comparing golden-fixture arithmetic alone proves crochet truth -- see known_issues and verification.reason below for the actual basis.",
+  "notes": "KNOWN-BAD / REJECTED regression example. This is a real API proposal (from data/confirmed_stitch_patterns.json's 'filet mesh' entry, produced by engine/vision.py's get_stitch_recipe() during real testing on 2026-09-05), preserved here so it is not lost or silently reproposed as new. It is NOT the canonical v2 reference example -- see contracts/examples/stitch_recipe_v2_structural_example.json for a different, non-rejected recipe candidate for the SAME broad stitch-family label (filet mesh). Its status is REJECTED, not AI_PROPOSED: its row-1 repeat conflicts with the specific target construction being tested (the halter/corset top's open filet-mesh grid) -- it lacks the per-repeat skipped foundation chain that construction needs to create its open grid, so it cannot produce the intended structure. That structural mismatch is sufficient basis to reject it without needing a fresh physical swatch. This is not a claim that comparing golden-fixture arithmetic alone proves crochet truth -- see known_issues and verification.reason below for the actual basis. It passes v2 SCHEMA validation despite being REJECTED: schema validation checks shape, not crochet correctness -- see docs/recipe_model_v2.md section 6.",
 
   "pattern_id": "filet_mesh_dc_ch1_rejected_ai_candidate",
   "name": "Filet Mesh (rejected AI candidate)",
@@ -9,7 +9,7 @@
   "foundation_formula": {
     "repeat_multiple": 1,
     "additional_chains": 3,
-    "note": "foundation_count = repeat_multiple * requested_repeat_count + additional_chains. additional_chains=3 covers 2 fresh chain links (setup's CH 2) plus 1 skipped foundation chain (setup's SKIP 1)."
+    "notes": "foundation_count = repeat_multiple * requested_repeat_count + additional_chains. additional_chains=3 covers 2 fresh chain links (setup's CH 2) plus 1 skipped foundation chain (setup's SKIP 1)."
   },
 
   "row_1": {
