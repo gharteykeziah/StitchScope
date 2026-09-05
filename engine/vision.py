@@ -1,17 +1,35 @@
 """
-Stand-in for the vision-model perception layer.
+The AI integration layer: identifying stitch regions from a photo, and
+separately, asking how a named stitch is conventionally constructed.
 
-There are no API credentials for a real vision-language model here, so
-get_vision_proposal() returns hand-written example proposals instead of
-an actual model response. That's the one deliberately faked piece of this
-project, and it's labeled as such -- everything downstream of it (schema
+These are deliberately TWO different API calls, not one. A photo-
+grounded call kept inventing garment-specific numbers when asked to
+propose row structure from an image -- oversized setup chains sized to
+the garment's width, inconsistent turning chains -- because it was
+trying to (mis)measure something from the photo instead of stating the
+stitch's actual convention. The same model gives correct, standard
+answers when asked generically "how do you construct a [stitch name]"
+with no image involved, nothing to measure against. So:
+
+  get_vision_proposal_from_photo() -- PHOTO call, IDENTIFICATION only:
+      region_label, stitch_family, confidence, uncertain_fields. No
+      setup, no repeat, no row structure, no numbers at all.
+
+  get_stitch_recipe() -- separate, NON-PHOTO call, given just a stitch
+      family name: the conventional setup/repeat/turning_chain
+      structure, as concrete steps. Never an absolute foundation count.
+
+get_vision_proposal() is the identification-only STAND-IN (no API
+credentials here), matching what get_vision_proposal_from_photo()
+actually returns. That's the one deliberately faked piece of this
+project, labeled as such -- everything downstream of it (schema
 validation, DSL parsing, row checking) is real and runs exactly as it
 would against a real model's output.
 
 A single photo can show more than one stitch pattern -- a fan panel and
 a mesh panel on the same garment, say -- so a proposal is a list of
-"regions", each proposed and validated independently. One region being
-wrong doesn't throw out the rest of the photo's proposal.
+"regions", each identified independently. One region being wrong
+doesn't throw out the rest of the photo's proposal.
 """
 
 import base64
@@ -23,11 +41,10 @@ from pathlib import Path
 from dotenv import load_dotenv
 import anthropic
 
-from engine.validator import check_full_row
-from engine.schema import validate_proposal
-from engine.renderer import render_row
+from engine.schema import validate_proposal, validate_recipe
 
-_SCHEMA_PATH = Path(__file__).resolve().parent.parent / "contracts" / "proposal_schema_v2.json"
+_SCHEMA_PATH = Path(__file__).resolve().parent.parent / "contracts" / "proposal_schema_v3.json"
+_RECIPE_SCHEMA_PATH = Path(__file__).resolve().parent.parent / "contracts" / "stitch_recipe_schema_v1.json"
 
 _MEDIA_TYPES = {
     ".jpg": "image/jpeg",
@@ -38,42 +55,58 @@ _MEDIA_TYPES = {
 _VISION_PROMPT = (
     "This is a photo of a crocheted garment. Identify 2-3 visually distinct "
     "stitch regions on it (for example, a mesh panel vs. a fan panel vs. a "
-    "border). For each region: give it a region_label describing where it "
-    "is on the garment, name the stitch_family, and propose 3-4 rows (not "
-    "just one) as they would actually be worked in order, one after "
-    "another -- each row's stitches build on the row before it, the way a "
-    "real swatch does.\n\n"
-    "Important context: you are describing rows for a SMALL TEST SWATCH "
-    "used to verify the stitch pattern, not sizing an actual finished "
-    "garment section. A foundation chain of some number of stitches has "
-    "already been created before row 1 begins -- you don't know that "
-    "number, and you should not try to guess or state it. Because of "
-    "this, a row's 'setup' should only ever describe the standard turning "
-    "chain appropriate for the stitch you identified in that row's repeat "
-    "-- the conventional turning-chain height for that stitch type, which "
-    "you already know -- used only if a turning chain is genuinely needed "
-    "before starting the repeat. Never propose a chain sized to the width "
-    "of the row or the garment. If a row doesn't need a turning chain, "
-    "its setup should be empty.\n\n"
-    "Each row is its own setup/repeat steps plus how many times the "
-    "repeat is worked (repeat_count), using only these stitch codes: CH, "
-    "SC, HDC, DC, SLST, SKIP, INC, DEC. Be honest about uncertainty -- "
-    "list any fields you aren't confident about in uncertain_fields "
-    "rather than guessing silently."
+    "border). For each region, give it a region_label describing where it "
+    "is on the garment, and name the stitch_family -- your best guess at "
+    "the conventional/standard name for this stitch pattern (e.g. 'filet "
+    "mesh', 'shell stitch', 'single crochet border').\n\n"
+    "Do NOT propose any row structure, stitch counts, setup steps, or "
+    "repeat units here -- this call is identification only. How a named "
+    "stitch is actually constructed is determined separately, by asking "
+    "generically how it's conventionally made, with no photo involved.\n\n"
+    "Be honest about uncertainty -- list any fields you aren't confident "
+    "about in uncertain_fields rather than guessing silently."
 )
 
 
+def _recipe_prompt(stitch_family):
+    return (
+        f"How is the crochet stitch pattern '{stitch_family}' conventionally "
+        f"constructed? Describe it as concrete steps, not prose, using only "
+        f"these stitch codes: CH, SC, HDC, DC, SLST, SKIP, INC, DEC.\n\n"
+        f"Give three things:\n"
+        f"1. setup: the one-time steps worked into the foundation chain "
+        f"before row 1's repeat starts. Can be empty if this stitch needs "
+        f"none.\n"
+        f"2. repeat: the unit that repeats across a row. Never empty.\n"
+        f"3. turning_chain: the conventional turning-chain steps worked at "
+        f"the start of EVERY row after the first, before that row's repeat "
+        f"starts -- this applies to row 2 onward, not just row 1. Can be "
+        f"empty if this stitch needs no turning chain.\n\n"
+        f"Important context: you are describing the STRUCTURE of a small "
+        f"test swatch used to verify the stitch pattern, not sizing an "
+        f"actual finished garment section. A foundation chain of some "
+        f"number of stitches will be created separately -- you don't know "
+        f"that number, and you must not state or imply one. Describe only "
+        f"the conventional setup/repeat/turning-chain structure for this "
+        f"stitch, independent of any particular swatch size. If your "
+        f"answer would naturally include an illustrative example number "
+        f"(like 'e.g. chain 21 for a 20-stitch swatch'), leave it out "
+        f"entirely -- only the structural steps matter here, never a "
+        f"foundation-scale guess."
+    )
+
+
 class VisionProposalError(Exception):
-    """Raised when a real vision-model call can't produce a usable proposal."""
+    """Raised when a real API call (photo identification or stitch recipe) can't produce a usable result."""
 
 
 def _add_additional_properties_false(node):
     """
-    contracts/proposal_schema_v2.json is written as the human-readable
-    contract, not an API request payload, so it doesn't set
-    additionalProperties on every object -- structured outputs require
-    that on every object schema. Added here, recursively, so the schema
-    file itself stays untouched and doesn't need retyping.
+    The contracts/*.json files are written as human-readable contracts,
+    not API request payloads, so they don't set additionalProperties on
+    every object -- structured outputs requires that on every object
+    schema. Added here, recursively, on an in-memory copy, so the
+    schema files themselves stay untouched and don't need retyping.
     """
     if isinstance(node, dict):
         if node.get("type") == "object":
@@ -88,10 +121,10 @@ def _add_additional_properties_false(node):
 
 _UNSUPPORTED_SCHEMA_KEYWORDS = ("minLength", "maxLength", "pattern", "minItems", "maxItems")
 
-# Non-standard metadata keys that contracts/proposal_schema_v2.json carries
-# for human readers ($schema/$id identify it as a draft-07 document,
-# schemaVersion is this project's own field) but that structured outputs
-# doesn't recognize as schema keywords -- dropped outright, no bound to
+# Non-standard metadata keys the contracts/*.json files carry for human
+# readers ($schema/$id identify the draft-07 document, schemaVersion is
+# this project's own field) but that structured outputs doesn't
+# recognize as schema keywords -- dropped outright, no bound to
 # preserve, unlike minimum/maximum.
 _UNSUPPORTED_METADATA_KEYS = ("$schema", "$id", "schemaVersion")
 
@@ -106,9 +139,9 @@ def _strip_unsupported_schema_keywords(schema_node):
     oneOf/anyOf/allOf entries. This walks a deep copy of the schema and
     removes them wherever they appear. A removed numeric minimum/maximum is
     folded into that node's description instead, so the model still knows
-    the constraint even though the API won't enforce it -- validate_proposal()
-    is what actually enforces it once the response comes back, so this
-    doesn't weaken what's ultimately trusted.
+    the constraint even though the API won't enforce it -- validate_proposal()/
+    validate_recipe() is what actually enforces it once the response comes
+    back, so this doesn't weaken what's ultimately trusted.
     """
     node = copy.deepcopy(schema_node)
     _strip_in_place(node)
@@ -143,8 +176,8 @@ def _strip_in_place(node):
             _strip_in_place(item)
 
 
-def _load_api_schema():
-    with open(_SCHEMA_PATH) as f:
+def _load_api_schema(schema_path):
+    with open(schema_path) as f:
         schema = json.load(f)
     schema = _add_additional_properties_false(schema)
     schema = _strip_unsupported_schema_keywords(schema)
@@ -161,24 +194,18 @@ def _media_type_for(image_path):
     return _MEDIA_TYPES[ext]
 
 
-def get_vision_proposal_from_photo(image_path, model="claude-haiku-4-5"):
+def _call_claude_for_structured_json(model, content, schema):
     """
-    Sends a real garment photo to Claude and returns a proposal dict in
-    the same shape get_vision_proposal() already returns -- a drop-in
-    replacement anywhere that shape is expected (process_proposal(), a
-    real-photo script, etc).
+    Shared plumbing for get_vision_proposal_from_photo() and
+    get_stitch_recipe(): loads the API key, calls Claude with structured
+    outputs constrained to schema, and returns the parsed JSON dict.
 
-    Uses the Messages API's structured-outputs feature (output_config
-    with format type "json_schema", loaded from
-    contracts/proposal_schema_v2.json) to constrain the response shape.
-    That constraint is never trusted blindly: the parsed response is
-    still run through validate_proposal() before being returned, the
-    same defensive check any other proposal gets.
-
-    Raises VisionProposalError with a clear message whenever a usable
-    proposal can't be produced: missing API key, a missing/unreadable
-    image, a network/API failure, or a response that fails
-    validate_proposal().
+    Raises VisionProposalError with a clear message on any failure:
+    missing/invalid API key, network/API errors, a safety refusal,
+    truncation, or a response that isn't valid JSON. Callers still run
+    their own schema-specific validate_proposal()/validate_recipe()
+    afterward -- this never trusts the response as usable just because
+    it came back through structured outputs.
     """
     load_dotenv()
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -188,34 +215,13 @@ def get_vision_proposal_from_photo(image_path, model="claude-haiku-4-5"):
             "project root (ANTHROPIC_API_KEY=...) or export it in your shell."
         )
 
-    image_file = Path(image_path)
-    if not image_file.is_file():
-        raise VisionProposalError(f"Image not found: {image_path}")
-
-    media_type = _media_type_for(image_path)
-    image_data = base64.standard_b64encode(image_file.read_bytes()).decode("utf-8")
-    schema = _load_api_schema()
-
     client = anthropic.Anthropic(api_key=api_key)
 
     try:
         response = client.messages.create(
             model=model,
             max_tokens=4096,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": image_data,
-                        },
-                    },
-                    {"type": "text", "text": _VISION_PROMPT},
-                ],
-            }],
+            messages=[{"role": "user", "content": content}],
             output_config={"format": {"type": "json_schema", "schema": schema}},
         )
     except anthropic.AuthenticationError as e:
@@ -230,13 +236,11 @@ def get_vision_proposal_from_photo(image_path, model="claude-haiku-4-5"):
         ) from e
 
     if response.stop_reason == "refusal":
-        raise VisionProposalError(
-            "Claude declined to answer (safety refusal) -- try a different photo."
-        )
+        raise VisionProposalError("Claude declined to answer (safety refusal).")
     if response.stop_reason == "max_tokens":
         raise VisionProposalError(
             "Response was cut off at the max_tokens limit before finishing -- "
-            "increase max_tokens in get_vision_proposal_from_photo()."
+            "increase max_tokens in engine/vision.py."
         )
 
     text_blocks = [block.text for block in response.content if block.type == "text"]
@@ -246,9 +250,45 @@ def get_vision_proposal_from_photo(image_path, model="claude-haiku-4-5"):
         )
 
     try:
-        proposal = json.loads(text_blocks[0])
+        return json.loads(text_blocks[0])
     except json.JSONDecodeError as e:
         raise VisionProposalError(f"Response wasn't valid JSON: {e}") from e
+
+
+def get_vision_proposal_from_photo(image_path, model="claude-haiku-4-5"):
+    """
+    Sends a real garment photo to Claude and returns a proposal dict in
+    the same shape get_vision_proposal() already returns: IDENTIFICATION
+    only -- region_label, stitch_family, confidence, uncertain_fields per
+    region. No row structure. For a named stitch_family's actual
+    construction, see get_stitch_recipe() -- a separate, non-photo call.
+
+    Uses the Messages API's structured-outputs feature, constrained to
+    contracts/proposal_schema_v3.json. That constraint is never trusted
+    blindly: the parsed response is still run through validate_proposal()
+    before being returned.
+
+    Raises VisionProposalError with a clear message whenever a usable
+    proposal can't be produced: missing API key, a missing/unreadable
+    image, a network/API failure, or a response that fails
+    validate_proposal().
+    """
+    image_file = Path(image_path)
+    if not image_file.is_file():
+        raise VisionProposalError(f"Image not found: {image_path}")
+
+    media_type = _media_type_for(image_path)
+    image_data = base64.standard_b64encode(image_file.read_bytes()).decode("utf-8")
+    schema = _load_api_schema(_SCHEMA_PATH)
+
+    content = [
+        {
+            "type": "image",
+            "source": {"type": "base64", "media_type": media_type, "data": image_data},
+        },
+        {"type": "text", "text": _VISION_PROMPT},
+    ]
+    proposal = _call_claude_for_structured_json(model, content, schema)
 
     errors = validate_proposal(proposal)
     if errors:
@@ -260,30 +300,63 @@ def get_vision_proposal_from_photo(image_path, model="claude-haiku-4-5"):
     return proposal
 
 
+def get_stitch_recipe(stitch_family, model="claude-haiku-4-5"):
+    """
+    Makes a SEPARATE API call -- NO image attached -- asking generically
+    how stitch_family is conventionally constructed. This is the fix for
+    a real failure mode: the same model that invents garment-specific
+    numbers (oversized setup chains, inconsistent turning chains) when
+    asked to propose row structure from a photo gives correct, standard
+    answers when asked this generically, with nothing to (mis)measure
+    against.
+
+    Returns {"setup": [...], "repeat": [...], "turning_chain": [...]} --
+    concrete step lists only, constrained by
+    contracts/stitch_recipe_schema_v1.json, which has no field for an
+    absolute foundation chain count at all. If the model's answer would
+    naturally include an illustrative concrete number, the prompt tells
+    it to leave that out; either way, nothing downstream ever extracts
+    or reads a number from anywhere but these three step lists -- there
+    is no other channel (like scanning response text) for a number to
+    arrive through.
+
+    Raises VisionProposalError on the same failure modes as
+    get_vision_proposal_from_photo(): missing key, network/API errors,
+    refusal, truncation, bad JSON, or a response that fails
+    validate_recipe().
+    """
+    schema = _load_api_schema(_RECIPE_SCHEMA_PATH)
+    content = [{"type": "text", "text": _recipe_prompt(stitch_family)}]
+    recipe = _call_claude_for_structured_json(model, content, schema)
+
+    errors = validate_recipe(recipe)
+    if errors:
+        raise VisionProposalError(
+            "Recipe response failed schema validation, even though it came "
+            "back through structured outputs:\n" + "\n".join(f"  - {e}" for e in errors)
+        )
+
+    return recipe
+
+
 def get_vision_proposal(which_example="good"):
     """
-    STAND-IN for a real vision-model API call. A real version of this
-    function would send a photo to a vision-language model and parse its
-    response into this same shape (see contracts/proposal_schema_v2.json
-    for what that shape has to be).
+    STAND-IN for a real photo-identification call. A real call would
+    send a photo to a vision-language model and parse its response into
+    this same shape (see contracts/proposal_schema_v3.json): IDENTIFICATION
+    only, no row structure -- get_stitch_recipe() is what supplies that,
+    separately, once a stitch_family is known.
 
-    which_example="good"  -> two distinct stitch regions, both valid
-    which_example="mixed" -> two regions from the same photo, one valid
-                              and one that isn't -- the realistic case:
-                              a model can be right about part of a photo
-                              and wrong about another part of it
+    which_example="good"  -> two distinct stitch regions, both confidently identified
+    which_example="mixed" -> two regions, one identification confident,
+                              one much less so -- the realistic case: a
+                              model can be sure about part of a photo and
+                              unsure about another part of it
     """
     mesh_region = {
         "region_label": "center panel",
         "stitch_family": "filet mesh",
         "confidence": 0.78,
-        "rows": [
-            {
-                "setup": [{"stitch": "SKIP", "count": 5}, {"stitch": "DC", "count": 1}],
-                "repeat": [{"stitch": "CH", "count": 1}, {"stitch": "SKIP", "count": 1}, {"stitch": "DC", "count": 1}],
-                "repeat_count": 7,
-            }
-        ],
         "uncertain_fields": [],
     }
 
@@ -292,13 +365,6 @@ def get_vision_proposal(which_example="good"):
             "region_label": "edge border",
             "stitch_family": "single crochet border",
             "confidence": 0.91,
-            "rows": [
-                {
-                    "setup": [],
-                    "repeat": [{"stitch": "SC", "count": 1}],
-                    "repeat_count": 20,
-                }
-            ],
             "uncertain_fields": [],
         }
         return {"photo_id": "halter_top_front.jpg", "regions": [mesh_region, border_region]}
@@ -308,36 +374,20 @@ def get_vision_proposal(which_example="good"):
             "region_label": "fan panel (left)",
             "stitch_family": "unknown cluster stitch",
             "confidence": 0.35,
-            "rows": [
-                {
-                    "setup": [{"stitch": "SKIP", "count": 5}, {"stitch": "DC", "count": 1}],
-                    "repeat": [{"stitch": "DC", "count": 5}],
-                    "repeat_count": 7,
-                }
-            ],
-            "uncertain_fields": ["stitch_count"],
+            "uncertain_fields": ["stitch_family"],
         }
         return {"photo_id": "halter_top_front.jpg", "regions": [mesh_region, unknown_cluster_region]}
 
 
-def _describe_steps(steps):
-    if not steps:
-        return "(none)"
-    return ", ".join(f"{s['stitch']} {s['count']}" for s in steps)
-
-
-def process_proposal(proposal, stitches_available):
+def process_proposal(proposal):
     """
-    Runs a vision-model proposal through the real validation pipeline:
-    schema check first (is this even shaped like a valid proposal?), then
-    each region's rows through the row simulator (does the AI's claimed
-    repeat_count actually fit the stitches available?). Each region is
-    reported on independently -- a bad guess in one region of a photo
-    doesn't hide a good guess in another.
-
-    stitches_available can be a single number (applied to every region)
-    or a list with one entry per region, since different panels of a
-    real garment don't all start from the same stitch count.
+    Prints a photo proposal's region identifications, after checking it
+    against the schema. IDENTIFICATION only -- region_label,
+    stitch_family, confidence, uncertain_fields -- no row structure or
+    stitch counts here; see get_stitch_recipe() for how a named stitch
+    family's actual construction is determined (a separate, non-photo
+    call), and run_real_photo.py for the full pipeline that turns an
+    identification into a validated test swatch.
     """
     schema_errors = validate_proposal(proposal)
     if schema_errors:
@@ -347,28 +397,10 @@ def process_proposal(proposal, stitches_available):
         return
 
     regions = proposal["regions"]
-    if isinstance(stitches_available, int):
-        stitches_available = [stitches_available] * len(regions)
-    if len(stitches_available) != len(regions):
-        raise ValueError(
-            f"stitches_available has {len(stitches_available)} entries but "
-            f"the proposal has {len(regions)} regions -- need one per region"
-        )
-
     print(f"Proposal for {proposal.get('photo_id', '?')}: {len(regions)} stitch region(s) detected")
 
-    for region, region_stitches_available in zip(regions, stitches_available):
+    for region in regions:
         print(f"\n-- {region['region_label']}: {region['stitch_family']} "
               f"(confidence: {region['confidence']}) --")
         if region["uncertain_fields"]:
             print(f"   AI is unsure about: {', '.join(region['uncertain_fields'])}")
-
-        for i, row in enumerate(region["rows"], start=1):
-            result = check_full_row(row, row["repeat_count"], region_stitches_available)
-            setup_text = _describe_steps(row["setup"])
-            repeat_text = _describe_steps(row["repeat"])
-            status = "VALID" if result["valid"] else "REJECTED"
-            print(f"   Row {i} (setup: {setup_text} | repeat: {repeat_text} x{row['repeat_count']}) "
-                  f"-> {status} (used {result['consumed']} of {region_stitches_available} available)")
-            if result["valid"]:
-                print(f"     In plain English: {render_row(row, row['repeat_count'])}")

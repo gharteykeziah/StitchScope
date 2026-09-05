@@ -62,12 +62,14 @@ def run_demo():
     print(f"Naive round-up: {naive_count}  (off by {abs(naive_count - target)})")
 
     print()
-    print("== AI proposes multiple stitch regions from one photo, we validate each ==")
-    print("-- Example 1: two regions, both valid --")
-    process_proposal(get_vision_proposal("good"), stitches_available=[foundation_chain, 20])
+    print("== AI identifies stitch regions from a photo (identification only -- ==")
+    print("== how each stitch is actually constructed comes from a separate,   ==")
+    print("== non-photo call; see engine/vision.py's get_stitch_recipe())      ==")
+    print("-- Example 1: two regions, both confidently identified --")
+    process_proposal(get_vision_proposal("good"))
     print()
-    print("-- Example 2: two regions from the same photo, one valid and one not --")
-    process_proposal(get_vision_proposal("mixed"), stitches_available=foundation_chain)
+    print("-- Example 2: two regions, one identification much less confident --")
+    process_proposal(get_vision_proposal("mixed"))
 
 
 if __name__ == "__main__":
