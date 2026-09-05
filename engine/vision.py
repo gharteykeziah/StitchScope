@@ -15,6 +15,7 @@ wrong doesn't throw out the rest of the photo's proposal.
 """
 
 import base64
+import copy
 import json
 import os
 from pathlib import Path
@@ -70,10 +71,69 @@ def _add_additional_properties_false(node):
     return node
 
 
+_UNSUPPORTED_SCHEMA_KEYWORDS = ("minLength", "maxLength", "pattern", "minItems", "maxItems")
+
+# Non-standard metadata keys that contracts/proposal_schema_v2.json carries
+# for human readers ($schema/$id identify it as a draft-07 document,
+# schemaVersion is this project's own field) but that structured outputs
+# doesn't recognize as schema keywords -- dropped outright, no bound to
+# preserve, unlike minimum/maximum.
+_UNSUPPORTED_METADATA_KEYS = ("$schema", "$id", "schemaVersion")
+
+
+def _strip_unsupported_schema_keywords(schema_node):
+    """
+    Claude's structured-outputs feature (output_config.format.schema) only
+    supports a subset of JSON Schema -- it rejects the whole request if it
+    sees minimum, maximum, minLength, maxLength, pattern, minItems,
+    maxItems, or non-standard metadata keys like schemaVersion anywhere in
+    the schema, including nested inside properties, items, or
+    oneOf/anyOf/allOf entries. This walks a deep copy of the schema and
+    removes them wherever they appear. A removed numeric minimum/maximum is
+    folded into that node's description instead, so the model still knows
+    the constraint even though the API won't enforce it -- validate_proposal()
+    is what actually enforces it once the response comes back, so this
+    doesn't weaken what's ultimately trusted.
+    """
+    node = copy.deepcopy(schema_node)
+    _strip_in_place(node)
+    return node
+
+
+def _strip_in_place(node):
+    if isinstance(node, dict):
+        minimum = node.pop("minimum", None)
+        maximum = node.pop("maximum", None)
+        for key in _UNSUPPORTED_SCHEMA_KEYWORDS:
+            node.pop(key, None)
+        for key in _UNSUPPORTED_METADATA_KEYS:
+            node.pop(key, None)
+
+        if minimum is not None or maximum is not None:
+            if minimum is not None and maximum is not None:
+                bound_note = f"Must be between {minimum} and {maximum}."
+            elif minimum is not None:
+                bound_note = f"Must be at least {minimum}."
+            else:
+                bound_note = f"Must be at most {maximum}."
+            existing_description = node.get("description")
+            node["description"] = (
+                f"{existing_description} {bound_note}" if existing_description else bound_note
+            )
+
+        for value in node.values():
+            _strip_in_place(value)
+    elif isinstance(node, list):
+        for item in node:
+            _strip_in_place(item)
+
+
 def _load_api_schema():
     with open(_SCHEMA_PATH) as f:
         schema = json.load(f)
-    return _add_additional_properties_false(schema)
+    schema = _add_additional_properties_false(schema)
+    schema = _strip_unsupported_schema_keywords(schema)
+    return schema
 
 
 def _media_type_for(image_path):
