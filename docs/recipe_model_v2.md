@@ -1,4 +1,4 @@
-# StitchScope Recipe Model v2 — Design (Phase 1), now with schema enforcement (Phase 2) and a foundation calculator (Phase 3)
+# StitchScope Recipe Model v2 — Design (Phase 1), now with schema enforcement (Phase 2), a foundation calculator (Phase 3), and row-1 math validation (Phase 4A)
 
 **Status: still not wired into the production photo pathway.**
 `engine/vision.py`, `engine/swatch.py` (its own, different v1 foundation
@@ -9,10 +9,12 @@ Phase 2 added `contracts/stitch_recipe_schema_v2.json` and
 `engine/schema.py`'s `validate_recipe_v2()`, actually enforcing the
 shape this document designs. Phase 3 added
 `engine/foundation.py`'s `calculate_foundation()` — see "Phase 3: the
-foundation calculator" near the end of this document for what it does
-and doesn't do. The rest of this document (sections 1–11) is the
-original Phase 1 design discussion, left as written; only this status
-note and the Phase 3 section are new.
+foundation calculator" for what it does and doesn't do. Phase 4A added
+`engine/recipe_validator.py`'s `validate_row_1_against_foundation()` —
+see "Phase 4A: row-1 math validation" for what it checks and why
+later-row validation isn't part of it. The rest of this document
+(sections 1–11) is the original Phase 1 design discussion, left as
+written; only this status note and the Phase 3/4A sections are new.
 
 *This is the corrected revision of the Phase 1 design. See the changelog
 at the bottom for what that correction pass fixed and why.*
@@ -177,7 +179,7 @@ Initial vocabulary:
 | `next_dc` | Worked specifically into the top of the next double-crochet stitch from the previous row — more specific than `next_stitch`, for patterns where hitting a particular stitch type matters (shells, V-stitches). |
 | `next_chain_space` | Worked into the open space formed by a chain. **Must refer to a chain space produced by the immediately previous row specifically** — not any earlier row, and not the current row's own not-yet-finished turning chain. If a real pattern needs to reach back further than one row, that is a different concept this vocabulary does not yet model (see open question 3). |
 | `turning_chain` | Describes the **role** of a chain worked at the beginning of a later row — this step *is* that turning chain, produced from the working loop rather than worked into an existing thing. It is a role label, not a separate production mechanism from `working_loop`; a turning-chain step is always also, mechanically, a `working_loop` chain. |
-| `same_stitch` | Worked into the same stitch as the immediately preceding step in this list — for stitches worked as a cluster (e.g. "5 DC in same stitch"). |
+| `same_stitch` | Worked into the same foundation position most recently targeted by a stitch. Intervening `working_loop` chains do not replace or clear that target — for stitches worked as a cluster (e.g. "5 DC in same stitch"). |
 
 `placement` is context-dependent: `next_foundation_chain` only makes
 sense on `row_1`; `next_chain_space` presupposes the previous row
@@ -477,6 +479,78 @@ what `row_1` actually consumes — that comparison, and everything about
 typed stitch positions, the swatch planner, and physical confirmation,
 is later-phase work this document does not cover.
 
+## Phase 4A: row-1 math validation
+
+`engine/recipe_validator.py`'s **`validate_row_1_against_foundation(recipe, requested_repeat_count)`**
+is the first place two independent declarations get compared: what
+`calculate_foundation()` says the foundation contains, and what `row_1`'s
+own setup/repeat instructions actually account for.
+
+**Exact accounting, not `<=`.** Row 1 must consume *exactly*
+`foundation_count` — not merely fit within it. `engine/swatch.py`'s v1
+pathway (and `engine/validator.py`'s `check_full_row()`) accept `consumed
+<= available`, because that model is checking whether a claimed row
+*fits* a foundation whose size came from somewhere else. Phase 4A is
+answering a narrower, stricter question — does the formula and row_1
+*agree* — so any gap in either direction is reported: `unused_foundation_positions`
+when row_1 consumes less than the formula provides, `overdrawn_foundation_positions`
+when it needs more.
+
+**Typed production**, returned as `{"stitch_posts": {<CODE>: <int>,
+...}, "chain_spaces": <int>, "total_workable_positions": <int>}` for
+`setup`, `repeat_once`, `repeat_total`, and the combined `row_1`. `INC`/
+`DEC` are filed under their own code (e.g. `{"INC": 2}`) rather than a
+guessed real stitch family — Phase 4A does not invent what an increase's
+resulting posts "really" are. `counts_as` is never consulted here: schema
+v2 doesn't permit it on `row_1` at all.
+
+**The known-bad example, concretely**: for 6 repeats its formula gives
+`foundation_count: 9`, but its `row_1` (setup `SKIP 1` = 1, repeat `DC 1,
+CH 1` ×6 = 6) only accounts for `7` — `valid: False`, with `"Row 1
+accounts for 7 of 9 foundation positions; 2 positions are unexplained."`
+in `errors`. **This does not change `verification.status`.** The recipe
+was already `REJECTED` for the reasons in section 8; this is a second,
+independent piece of evidence against it, not a new decision this module
+makes — a `True` result never means `CONFIRMED` either, and nothing here
+writes to `verification` at all.
+
+**`same_stitch`, in this limited model**: it consumes zero additional
+foundation positions (it reuses whatever position the immediately
+preceding *placing* step targeted, rather than advancing). A
+`working_loop` chain in between does not clear that target — a floating
+chain hung off the working loop never touches the foundation, so it has
+no reason to erase the position a stitch most recently placed into. For
+example, `DC next_foundation_chain` → `CH working_loop` → `DC
+same_stitch` is valid: the final `DC` refers back to the same foundation
+chain the first `DC` did, consuming exactly 1 foundation position while
+producing 2 DC posts + 1 chain space (3 total workable positions). Two
+combinations Phase 4A still refuses to guess at, raising
+`RecipeMathError` instead of a report: `same_stitch` with nothing before
+it that placed a stitch, and `same_stitch` on a `SKIP` (skipping doesn't
+work into a stitch, so there's no "same stitch" to mean).
+
+**Target state flows across the row's whole real execution order, not
+just within one list.** `row_1.repeat` is executed *sequentially*,
+`requested_repeat_count` times — never analyzed once and multiplied. The
+first pass picks up the target `setup` leaves behind; each subsequent
+pass picks up the target the *previous pass* left behind, not whatever
+`setup` originally left. This matters whenever one pass's last placing
+step (or a trailing `SKIP`, which clears the target) leaves a different
+target state than the pass started with: a `same_stitch` that opens the
+next pass must see that carried-forward state, and an implementation
+that analyzed `repeat` once and multiplied the result would miss a case
+where only a later pass becomes invalid. `consumed_foundation_positions`
+and `produced_structure` accumulate the same way — pass by pass — for
+`repeat_total`; `repeat_once` always reports the first pass specifically
+(the one whose target came from `setup`).
+
+**Later-row typed validation is not implemented.** `later_rows` is not
+touched by this function at all — turning-chain interpretation, whether
+`next_dc` passes over chain spaces, whether a `counts_as` DC can be
+targeted by `next_dc`, and connected multi-row simulation over the typed
+model remain exactly as unresolved as section 11 leaves them. That is
+Phase 4B and later, not covered here.
+
 ## Changelog — first correction pass
 
 1. **Separated computer simulation from physical swatch testing.**
@@ -539,3 +613,39 @@ is later-phase work this document does not cover.
    which are now corrected. No historical evidence (dates, logged
    findings, past discrepancies) was altered — only the framing around
    it.
+
+## Changelog — third correction pass (Phase 4A semantics fix)
+
+1. **`working_loop` no longer clears the previously established target.**
+   `engine/recipe_validator.py`'s `_analyze_row1_steps()` previously reset
+   `target_established` to `False` on every `working_loop` step, on the
+   reasoning that "a floating chain isn't a stitch `same_stitch` could
+   reference." That conflated the chain itself (correctly not a valid
+   `same_stitch` referent) with the *target established before it*
+   (which a floating chain does nothing to erase). `DC
+   next_foundation_chain` → `CH working_loop` → `DC same_stitch` is now
+   correctly valid — the final `DC` refers back to the same foundation
+   chain the first `DC` did — consuming exactly 1 foundation position
+   and producing 2 DC posts + 1 chain space (3 total workable
+   positions). `same_stitch` with no established prior target, and
+   `same_stitch` on a `SKIP` step, still both raise `RecipeMathError`
+   exactly as before — this fix only changes what `working_loop` does to
+   the *carried* target, nothing else.
+2. **`row_1.repeat` is now executed sequentially, not analyzed once and
+   multiplied.** `validate_row_1_against_foundation()` previously called
+   `_analyze_row1_steps()` on `repeat` exactly once (seeded from
+   `setup`'s ending target) and multiplied that single pass's consumed
+   count and produced structure by `requested_repeat_count`. Because
+   target state can now legitimately change across a `repeat` pass (via
+   item 1's fix, or a trailing `SKIP` clearing it), a later pass's
+   starting target can differ from what `setup` left behind, and only
+   sequential, pass-by-pass execution — each pass's target carried
+   verbatim into the next — catches a `same_stitch` that only becomes
+   invalid partway through the repeats. `repeat_once` now specifically
+   means the first pass (the one whose target came from `setup`);
+   `repeat_total` accumulates consumed positions and produced structure
+   pass by pass. All previously-documented report fields (`setup`,
+   `repeat_once`, `repeat_total`, `row_1`, `consumed_foundation_positions`,
+   `produced_structure`, `unused_foundation_positions`,
+   `overdrawn_foundation_positions`, the expected-repeat comparisons,
+   `valid`, `errors`) are unchanged in shape and meaning.
