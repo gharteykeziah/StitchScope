@@ -14,9 +14,175 @@ a mesh panel on the same garment, say -- so a proposal is a list of
 wrong doesn't throw out the rest of the photo's proposal.
 """
 
+import base64
+import json
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+import anthropic
+
 from engine.validator import check_full_row
 from engine.schema import validate_proposal
 from engine.renderer import render_row
+
+_SCHEMA_PATH = Path(__file__).resolve().parent.parent / "contracts" / "proposal_schema_v2.json"
+
+_MEDIA_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+}
+
+_VISION_PROMPT = (
+    "This is a photo of a crocheted garment. Identify 2-3 visually distinct "
+    "stitch regions on it (for example, a mesh panel vs. a fan panel vs. a "
+    "border). For each region: give it a region_label describing where it "
+    "is on the garment, name the stitch_family, and propose the row(s) as "
+    "setup/repeat steps plus how many times the repeat is worked "
+    "(repeat_count), using only these stitch codes: CH, SC, HDC, DC, SLST, "
+    "SKIP, INC, DEC. Be honest about uncertainty -- list any fields you "
+    "aren't confident about in uncertain_fields rather than guessing "
+    "silently."
+)
+
+
+class VisionProposalError(Exception):
+    """Raised when a real vision-model call can't produce a usable proposal."""
+
+
+def _add_additional_properties_false(node):
+    """
+    contracts/proposal_schema_v2.json is written as the human-readable
+    contract, not an API request payload, so it doesn't set
+    additionalProperties on every object -- structured outputs require
+    that on every object schema. Added here, recursively, so the schema
+    file itself stays untouched and doesn't need retyping.
+    """
+    if isinstance(node, dict):
+        if node.get("type") == "object":
+            node.setdefault("additionalProperties", False)
+        for value in node.values():
+            _add_additional_properties_false(value)
+    elif isinstance(node, list):
+        for item in node:
+            _add_additional_properties_false(item)
+    return node
+
+
+def _load_api_schema():
+    with open(_SCHEMA_PATH) as f:
+        schema = json.load(f)
+    return _add_additional_properties_false(schema)
+
+
+def _media_type_for(image_path):
+    ext = Path(image_path).suffix.lower()
+    if ext not in _MEDIA_TYPES:
+        raise VisionProposalError(
+            f"Unsupported image extension '{ext}' for {image_path} "
+            f"(expected one of {sorted(_MEDIA_TYPES)})"
+        )
+    return _MEDIA_TYPES[ext]
+
+
+def get_vision_proposal_from_photo(image_path, model="claude-haiku-4-5"):
+    """
+    Sends a real garment photo to Claude and returns a proposal dict in
+    the same shape get_vision_proposal() already returns -- a drop-in
+    replacement anywhere that shape is expected (process_proposal(), a
+    real-photo script, etc).
+
+    Uses the Messages API's structured-outputs feature (output_config
+    with format type "json_schema", loaded from
+    contracts/proposal_schema_v2.json) to constrain the response shape.
+    That constraint is never trusted blindly: the parsed response is
+    still run through validate_proposal() before being returned, the
+    same defensive check any other proposal gets.
+
+    Raises VisionProposalError with a clear message whenever a usable
+    proposal can't be produced: missing API key, a missing/unreadable
+    image, a network/API failure, or a response that fails
+    validate_proposal().
+    """
+    load_dotenv()
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise VisionProposalError(
+            "ANTHROPIC_API_KEY is not set. Put it in a .env file at the "
+            "project root (ANTHROPIC_API_KEY=...) or export it in your shell."
+        )
+
+    image_file = Path(image_path)
+    if not image_file.is_file():
+        raise VisionProposalError(f"Image not found: {image_path}")
+
+    media_type = _media_type_for(image_path)
+    image_data = base64.standard_b64encode(image_file.read_bytes()).decode("utf-8")
+    schema = _load_api_schema()
+
+    client = anthropic.Anthropic(api_key=api_key)
+
+    try:
+        response = client.messages.create(
+            model=model,
+            max_tokens=4096,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": image_data,
+                        },
+                    },
+                    {"type": "text", "text": _VISION_PROMPT},
+                ],
+            }],
+            output_config={"format": {"type": "json_schema", "schema": schema}},
+        )
+    except anthropic.AuthenticationError as e:
+        raise VisionProposalError(f"Anthropic API rejected the API key: {e}") from e
+    except anthropic.RateLimitError as e:
+        raise VisionProposalError(f"Rate limited by the Anthropic API: {e}") from e
+    except anthropic.APIConnectionError as e:
+        raise VisionProposalError(f"Network error calling the Anthropic API: {e}") from e
+    except anthropic.APIStatusError as e:
+        raise VisionProposalError(
+            f"Anthropic API returned an error (status {e.status_code}): {e.message}"
+        ) from e
+
+    if response.stop_reason == "refusal":
+        raise VisionProposalError(
+            "Claude declined to answer (safety refusal) -- try a different photo."
+        )
+    if response.stop_reason == "max_tokens":
+        raise VisionProposalError(
+            "Response was cut off at the max_tokens limit before finishing -- "
+            "increase max_tokens in get_vision_proposal_from_photo()."
+        )
+
+    text_blocks = [block.text for block in response.content if block.type == "text"]
+    if not text_blocks:
+        raise VisionProposalError(
+            f"No text content in the API response (stop_reason={response.stop_reason!r})"
+        )
+
+    try:
+        proposal = json.loads(text_blocks[0])
+    except json.JSONDecodeError as e:
+        raise VisionProposalError(f"Response wasn't valid JSON: {e}") from e
+
+    errors = validate_proposal(proposal)
+    if errors:
+        raise VisionProposalError(
+            "Real proposal failed schema validation, even though it came "
+            "back through structured outputs:\n" + "\n".join(f"  - {e}" for e in errors)
+        )
+
+    return proposal
 
 
 def get_vision_proposal(which_example="good"):
