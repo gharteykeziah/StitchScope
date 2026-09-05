@@ -1,0 +1,51 @@
+{
+  "_comment": "KNOWN-BAD / REJECTED regression example. This is a real API proposal (from data/confirmed_stitch_patterns.json's 'filet mesh' entry, produced by engine/vision.py's get_stitch_recipe() during real testing on 2026-09-05), preserved here so it is not lost or silently reproposed as new. It is NOT the canonical v2 reference example -- see contracts/examples/stitch_recipe_v2_structural_example.json for a different, non-rejected recipe candidate for the SAME broad stitch-family label (filet mesh). Its status is REJECTED, not AI_PROPOSED: its row-1 repeat conflicts with the specific target construction being tested (the halter/corset top's open filet-mesh grid) -- it lacks the per-repeat skipped foundation chain that construction needs to create its open grid, so it cannot produce the intended structure. That structural mismatch is sufficient basis to reject it without needing a fresh physical swatch. This is not a claim that comparing golden-fixture arithmetic alone proves crochet truth -- see known_issues and verification.reason below for the actual basis.",
+
+  "pattern_id": "filet_mesh_dc_ch1_rejected_ai_candidate",
+  "name": "Filet Mesh (rejected AI candidate)",
+  "aliases": [],
+  "terminology": "US",
+
+  "foundation_formula": {
+    "repeat_multiple": 1,
+    "additional_chains": 3,
+    "note": "foundation_count = repeat_multiple * requested_repeat_count + additional_chains. additional_chains=3 covers 2 fresh chain links (setup's CH 2) plus 1 skipped foundation chain (setup's SKIP 1)."
+  },
+
+  "row_1": {
+    "setup": [
+      {"stitch": "SKIP", "count": 1, "placement": "next_foundation_chain"}
+    ],
+    "repeat": [
+      {"stitch": "DC", "count": 1, "placement": "next_foundation_chain"},
+      {"stitch": "CH", "count": 1, "placement": "working_loop"}
+    ]
+  },
+
+  "later_rows": {
+    "setup": [
+      {"stitch": "CH", "count": 3, "placement": "turning_chain", "counts_as": {"stitch_posts": {"DC": 1}, "chain_spaces": 0}}
+    ],
+    "repeat": [
+      {"stitch": "DC", "count": 1, "placement": "next_chain_space"},
+      {"stitch": "CH", "count": 1, "placement": "working_loop"}
+    ]
+  },
+
+  "expected_swatch_structure": {
+    "expected_stitch_posts_per_repeat": 1,
+    "expected_chain_spaces_per_repeat": 1
+  },
+
+  "known_issues": [
+    "Row-1 repeat lacks a per-repeat skipped foundation chain -- every repeat iteration consumes only the DC (1 stitch), so the row-1 repeat never opens a gap in the foundation. The specific target construction this candidate was meant to describe (the halter/corset top's open filet-mesh grid, as worked in this project's regression fixtures at tests/golden/halter_mesh_row1_*.json) needs a per-repeat SKIP to create that open grid; this candidate omits it entirely and therefore does not create the intended open foundation grid.",
+    "Mathematical consistency does not establish filet-mesh correctness -- this candidate's foundation/row arithmetic computes cleanly (no internal contradiction), but internal consistency alone cannot show it creates the target construction's open grid. Only comparing what each repeat iteration actually does (open a gap, or not) surfaces the missing SKIP -- a structural/definitional comparison, not proof derived from fixture arithmetic passing. Passing or comparing golden-fixture arithmetic alone does not, by itself, prove crochet correctness in either direction.",
+    "Chain-2 (row 1 setup) vs. chain-3 (later-row turning chain) lead-in length mismatch for the same DC-based repeat, flagged 2026-09-05 in data/concierge_log.csv and never resolved -- a further, independent reason to distrust this candidate even before the missing-SKIP issue is considered."
+  ],
+
+  "verification": {
+    "status": "REJECTED",
+    "confirmations": [],
+    "reason": "Row-1 repeat conflicts with the specific target construction being tested (the halter/corset top's open filet-mesh grid): it lacks the per-repeat skipped foundation chain that construction requires to create its open grid, so it does not produce the intended structure. This is a structural/definitional mismatch with the target construction, not a claim that passing or comparing golden-fixture arithmetic alone proves crochet truth -- those fixtures document real hand-crocheted observations and expected engine behavior, including their own unresolved 4-vs-5 DC discrepancy, and are not treated as infallible ground truth here. No fresh physical swatch of this specific candidate was required to reach this rejection."
+  }
+}
