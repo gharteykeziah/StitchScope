@@ -14,7 +14,9 @@ that ground truth instead of trusted fresh each time.
 Each entry is keyed by a normalized stitch family name and holds:
   setup           -- confirmed step list, or None if not yet confirmed
   repeat          -- confirmed step list, or None if not yet confirmed
-  turning_chain   -- confirmed int, or None if not yet confirmed
+  turning_chain   -- confirmed step list (like setup/repeat -- the
+                      turning-chain steps for rows after the first), or
+                      None if not yet confirmed
   confirmations   -- list of {"photo", "date", "note"}; empty until
                       confirm_pattern() is called at least once
   last_ai_proposal -- the most recent {"setup", "repeat",
@@ -61,6 +63,26 @@ def save_patterns(data):
     with open(_PATTERNS_PATH, "w") as f:
         json.dump(data, f, indent=2, sort_keys=True)
         f.write("\n")
+
+
+def get_confirmed_recipe(stitch_family):
+    """
+    Returns the confirmed {"setup", "repeat", "turning_chain"} for
+    stitch_family, or None if nothing's confirmed yet -- whether this
+    stitch family has never been seen at all, or has only ever been
+    proposed (an entry exists, but confirmations is empty).
+
+    A pure read: doesn't touch last_ai_proposal or write anything. Meant
+    for callers deciding whether they even need to ask for a fresh
+    recipe at all (see run_real_photo.py's resolve_recipe()) -- no
+    need to call get_stitch_recipe() again once something's proven.
+    """
+    key = normalize_stitch_family(stitch_family)
+    data = load_patterns()
+    entry = data.get(key)
+    if entry is None or not entry["confirmations"]:
+        return None
+    return {"setup": entry["setup"], "repeat": entry["repeat"], "turning_chain": entry["turning_chain"]}
 
 
 def check_against_confirmed(stitch_family, proposed_setup, proposed_repeat, proposed_turning_chain):
