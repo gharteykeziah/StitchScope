@@ -39,12 +39,14 @@ _VISION_PROMPT = (
     "This is a photo of a crocheted garment. Identify 2-3 visually distinct "
     "stitch regions on it (for example, a mesh panel vs. a fan panel vs. a "
     "border). For each region: give it a region_label describing where it "
-    "is on the garment, name the stitch_family, and propose the row(s) as "
-    "setup/repeat steps plus how many times the repeat is worked "
-    "(repeat_count), using only these stitch codes: CH, SC, HDC, DC, SLST, "
-    "SKIP, INC, DEC. Be honest about uncertainty -- list any fields you "
-    "aren't confident about in uncertain_fields rather than guessing "
-    "silently."
+    "is on the garment, name the stitch_family, and propose 3-4 rows (not "
+    "just one) as they would actually be worked in order, one after "
+    "another -- each row's stitches build on the row before it, the way a "
+    "real swatch does. Each row is its own setup/repeat steps plus how "
+    "many times the repeat is worked (repeat_count), using only these "
+    "stitch codes: CH, SC, HDC, DC, SLST, SKIP, INC, DEC. Be honest about "
+    "uncertainty -- list any fields you aren't confident about in "
+    "uncertain_fields rather than guessing silently."
 )
 
 
