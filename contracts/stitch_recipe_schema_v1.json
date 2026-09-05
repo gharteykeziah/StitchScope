@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://stitchscope.local/schema/stitch_recipe_v1.json",
+  "title": "StitchScope Stitch Recipe (non-photo, generic construction)",
+  "schemaVersion": "1.0.0",
+  "description": "The structured shape a NON-PHOTO recipe call must conform to: how a named stitch family is conventionally constructed, as concrete steps -- never an absolute foundation chain count for any specific swatch size. Produced by engine/vision.py's get_stitch_recipe(), a separate API call with no image attached, asked generically ('how is X conventionally constructed') rather than grounded in a photo -- the same model invents garment-specific numbers when a photo call is asked to propose row structure, but gives correct, standard answers to this generic framing. setup is the one-time steps worked before row 1's repeat starts; repeat is the unit that repeats across a row; turning_chain is the conventional turning-chain steps worked at the start of every row after the first, before that row's repeat starts. engine/schema.py's validate_recipe() enforces these same rules in plain Python.",
+  "type": "object",
+  "required": ["setup", "repeat", "turning_chain"],
+  "properties": {
+    "setup": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/step" },
+      "description": "One-time steps worked into the foundation chain before row 1's repeat starts. Can be empty if this stitch needs none."
+    },
+    "repeat": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/step" },
+      "description": "The unit that repeats across a row. Never empty."
+    },
+    "turning_chain": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/step" },
+      "description": "Conventional turning-chain steps worked at the start of every row after the first, before that row's repeat starts. Can be empty if this stitch needs no turning chain."
+    }
+  },
+  "definitions": {
+    "step": {
+      "type": "object",
+      "required": ["stitch", "count"],
+      "properties": {
+        "stitch": {
+          "type": "string",
+          "enum": ["CH", "SC", "HDC", "DC", "SLST", "SKIP", "INC", "DEC"]
+        },
+        "count": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

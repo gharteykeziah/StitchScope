@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://stitchscope.local/schema/proposal_v3.json",
+  "title": "StitchScope Vision Proposal (identification only)",
+  "schemaVersion": "3.0.0",
+  "description": "The structured shape a vision-model PHOTO call must conform to. v3, not v2: the photo call now only IDENTIFIES stitch regions (region_label, stitch_family, confidence, uncertain_fields) -- it no longer proposes any row structure. A photo-grounded call kept inventing garment-specific numbers (oversized setup chains, inconsistent turning chains) when asked to propose row structure from an image, but the same model gives correct, standard answers when asked generically how a named stitch is conventionally constructed, with no image involved. See stitch_recipe_schema_v1.json and engine/vision.py's get_stitch_recipe() for that separate, non-photo call. proposal_schema_v2.json is kept around, marked superseded, as a record of that change. engine/schema.py enforces these same rules in plain Python.",
+  "type": "object",
+  "required": ["regions"],
+  "properties": {
+    "photo_id": {
+      "type": "string",
+      "description": "Optional label for the source photo/crop this proposal came from."
+    },
+    "regions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/region" },
+      "description": "One entry per distinct stitch pattern detected in the photo."
+    }
+  },
+  "definitions": {
+    "region": {
+      "type": "object",
+      "required": ["region_label", "stitch_family", "confidence", "uncertain_fields"],
+      "properties": {
+        "region_label": {
+          "type": "string",
+          "description": "Where this stitch pattern is on the garment, e.g. 'center panel' or 'fan panel (left)'."
+        },
+        "stitch_family": {
+          "type": "string",
+          "description": "Human-readable name for the guessed stitch pattern, e.g. 'filet mesh'. This is the ONLY thing used to look up or ask how it's constructed -- see engine/vision.py's get_stitch_recipe()."
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "The model's own confidence in this region's identification, 0-1. Metadata about the guess, not validated for correctness."
+        },
+        "uncertain_fields": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Names of fields the model is unsure about for this region, e.g. 'stitch_family'. Empty list means confident in everything proposed for this region."
+        }
+      }
+    }
+  }
+}
