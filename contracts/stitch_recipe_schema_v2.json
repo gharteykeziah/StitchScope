@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://stitchscope.local/schema/stitch_recipe_v2.json",
+  "title": "StitchScope Stitch Recipe v2 (canonical recipe model)",
+  "schemaVersion": "2.0.0",
+  "description": "Defines the canonical v2 recipe shape designed in docs/recipe_model_v2.md: identity (pattern_id/name/aliases/terminology), a foundation-length formula (meaning only -- no calculator implemented), separate row_1 and later_rows setup/repeat step lists (each with a context-restricted placement enum -- row 1's placement rules differ from later_rows.setup's, which differ again from later_rows.repeat's), a per-step optional counts_as object, expected swatch structure, and a graduated verification status with status/confirmation consistency rules. Not yet used by any production code path -- see contracts/stitch_recipe_schema_v1.json for what engine/vision.py's get_stitch_recipe() actually produces today, and engine/schema.py's validate_recipe_v2() for the plain-Python validator that actually runs (this file is the language-agnostic reference, matching this project's existing convention for stitch_recipe_schema_v1.json and proposal_schema_v3.json).",
+  "type": "object",
+  "required": [
+    "pattern_id", "name", "aliases", "terminology",
+    "foundation_formula", "row_1", "later_rows",
+    "expected_swatch_structure", "verification"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "pattern_id": { "type": "string", "minLength": 1 },
+    "name": { "type": "string", "minLength": 1 },
+    "aliases": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "terminology": { "type": "string", "enum": ["US", "UK"] },
+    "foundation_formula": { "$ref": "#/definitions/foundation_formula" },
+    "row_1": { "$ref": "#/definitions/row_1_shape" },
+    "later_rows": { "$ref": "#/definitions/later_rows_shape" },
+    "expected_swatch_structure": { "$ref": "#/definitions/expected_swatch_structure" },
+    "verification": { "$ref": "#/definitions/verification" },
+    "notes": { "type": "string", "minLength": 1 },
+    "known_issues": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  },
+
+  "definitions": {
+    "stitch_code": {
+      "type": "string",
+      "enum": ["CH", "SC", "HDC", "DC", "SLST", "SKIP", "INC", "DEC"]
+    },
+
+    "foundation_formula": {
+      "type": "object",
+      "required": ["repeat_multiple", "additional_chains"],
+      "additionalProperties": false,
+      "properties": {
+        "repeat_multiple": { "type": "integer", "minimum": 1 },
+        "additional_chains": { "type": "integer", "minimum": 0 },
+        "notes": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "counts_as": {
+      "type": "object",
+      "required": ["stitch_posts", "chain_spaces"],
+      "additionalProperties": false,
+      "properties": {
+        "stitch_posts": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "CH": { "type": "integer", "minimum": 0 },
+            "SC": { "type": "integer", "minimum": 0 },
+            "HDC": { "type": "integer", "minimum": 0 },
+            "DC": { "type": "integer", "minimum": 0 },
+            "SLST": { "type": "integer", "minimum": 0 },
+            "SKIP": { "type": "integer", "minimum": 0 },
+            "INC": { "type": "integer", "minimum": 0 },
+            "DEC": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "chain_spaces": { "type": "integer", "minimum": 0 }
+      },
+      "not": {
+        "description": "Rejects a counts_as object with no effect at all: chain_spaces is 0 AND every stitch_posts entry (if any) is also 0.",
+        "allOf": [
+          { "properties": { "chain_spaces": { "const": 0 } }, "required": ["chain_spaces"] },
+          { "properties": { "stitch_posts": { "additionalProperties": { "const": 0 } } } }
+        ]
+      }
+    },
+
+    "row1_step": {
+      "type": "object",
+      "required": ["stitch", "count", "placement"],
+      "additionalProperties": false,
+      "properties": {
+        "stitch": { "$ref": "#/definitions/stitch_code" },
+        "count": { "type": "integer", "minimum": 1 },
+        "placement": {
+          "type": "string",
+          "enum": ["next_foundation_chain", "working_loop", "same_stitch"],
+          "description": "Row 1 only. next_stitch/next_dc/next_chain_space/turning_chain are invalid here -- there is no previous row and no foundation-independent working loop role on row 1."
+        },
+        "counts_as": { "$ref": "#/definitions/counts_as" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "stitch": { "const": "CH" } }, "required": ["stitch"] },
+          "then": { "properties": { "placement": { "const": "working_loop" } } },
+          "else": { "properties": { "placement": { "enum": ["next_foundation_chain", "same_stitch"] } } }
+        }
+      ],
+      "not": {
+        "required": ["counts_as"],
+        "description": "counts_as is only ever valid on a turning_chain step, and turning_chain is not a legal placement on row_1 at all."
+      }
+    },
+
+    "later_setup_step": {
+      "type": "object",
+      "required": ["stitch", "count", "placement"],
+      "additionalProperties": false,
+      "properties": {
+        "stitch": { "$ref": "#/definitions/stitch_code" },
+        "count": { "type": "integer", "minimum": 1 },
+        "placement": {
+          "type": "string",
+          "enum": ["working_loop", "next_stitch", "next_dc", "next_chain_space", "turning_chain", "same_stitch"],
+          "description": "later_rows.setup: next_foundation_chain is invalid (no foundation chain to place into on a later row). Everything else Phase 1 didn't clearly settle for this position is left permissive rather than newly forbidden."
+        },
+        "counts_as": { "$ref": "#/definitions/counts_as" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "stitch": { "const": "CH" } }, "required": ["stitch"] },
+          "then": { "properties": { "placement": { "enum": ["working_loop", "turning_chain"] } } },
+          "else": {
+            "properties": { "placement": { "enum": ["next_stitch", "next_dc", "next_chain_space", "same_stitch"] } },
+            "not": { "required": ["counts_as"] }
+          }
+        },
+        {
+          "if": { "not": { "properties": { "placement": { "const": "turning_chain" } } } },
+          "then": {
+            "not": { "required": ["counts_as"] },
+            "description": "counts_as is only ever valid alongside placement: turning_chain."
+          }
+        }
+      ]
+    },
+
+    "later_repeat_step": {
+      "type": "object",
+      "required": ["stitch", "count", "placement"],
+      "additionalProperties": false,
+      "properties": {
+        "stitch": { "$ref": "#/definitions/stitch_code" },
+        "count": { "type": "integer", "minimum": 1 },
+        "placement": {
+          "type": "string",
+          "enum": ["working_loop", "next_stitch", "next_dc", "next_chain_space", "same_stitch"],
+          "description": "later_rows.repeat: next_foundation_chain and turning_chain are both invalid here -- there is no foundation chain to reach, and a turning chain is a setup action, not a repeat action."
+        },
+        "counts_as": { "$ref": "#/definitions/counts_as" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "stitch": { "const": "CH" } }, "required": ["stitch"] },
+          "then": { "properties": { "placement": { "const": "working_loop" } } },
+          "else": { "properties": { "placement": { "enum": ["next_stitch", "next_dc", "next_chain_space", "same_stitch"] } } }
+        }
+      ],
+      "not": {
+        "required": ["counts_as"],
+        "description": "turning_chain is not a legal placement inside a repeat at all, so counts_as (valid only alongside it) can never apply here."
+      }
+    },
+
+    "row_1_shape": {
+      "type": "object",
+      "required": ["setup", "repeat"],
+      "additionalProperties": false,
+      "properties": {
+        "setup": { "type": "array", "items": { "$ref": "#/definitions/row1_step" } },
+        "repeat": { "type": "array", "minItems": 1, "items": { "$ref": "#/definitions/row1_step" } },
+        "notes": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "later_rows_shape": {
+      "type": "object",
+      "required": ["setup", "repeat"],
+      "additionalProperties": false,
+      "properties": {
+        "setup": { "type": "array", "items": { "$ref": "#/definitions/later_setup_step" } },
+        "repeat": { "type": "array", "minItems": 1, "items": { "$ref": "#/definitions/later_repeat_step" } },
+        "notes": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "expected_swatch_structure": {
+      "type": "object",
+      "required": ["expected_stitch_posts_per_repeat", "expected_chain_spaces_per_repeat"],
+      "additionalProperties": false,
+      "properties": {
+        "expected_stitch_posts_per_repeat": { "type": ["integer", "null"], "minimum": 0 },
+        "expected_chain_spaces_per_repeat": { "type": ["integer", "null"], "minimum": 0 },
+        "notes": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "confirmation": {
+      "type": "object",
+      "required": ["photo", "date", "note"],
+      "additionalProperties": false,
+      "properties": {
+        "photo": { "type": "string", "minLength": 1 },
+        "date": { "type": "string", "minLength": 1 },
+        "note": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "verification": {
+      "type": "object",
+      "required": ["status", "confirmations"],
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["AI_PROPOSED", "STRUCTURE_VALID", "MATH_VALID", "SIMULATION_VALID", "SWATCH_TESTED", "CONFIRMED", "REJECTED"]
+        },
+        "confirmations": { "type": "array", "items": { "$ref": "#/definitions/confirmation" } },
+        "reason": { "type": "string", "minLength": 1 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "CONFIRMED" } }, "required": ["status"] },
+          "then": { "properties": { "confirmations": { "minItems": 1 } } }
+        },
+        {
+          "if": { "properties": { "status": { "const": "SWATCH_TESTED" } }, "required": ["status"] },
+          "then": { "properties": { "confirmations": { "minItems": 1 } } }
+        },
+        {
+          "if": { "properties": { "status": { "const": "REJECTED" } }, "required": ["status"] },
+          "then": { "required": ["reason"] }
+        }
+      ]
+    }
+  }
+}
