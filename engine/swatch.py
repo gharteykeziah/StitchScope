@@ -44,14 +44,29 @@ def build_test_foundation(setup_steps, repeat_steps, test_repeat_count=6):
     return result["consumed"]
 
 
-def simulate_swatch(rows, foundation_length):
+def simulate_swatch(rows, foundation_length, test_repeat_count=6):
     """
-    Walks a list of proposed rows (each {"setup", "repeat", "repeat_count"},
-    in order) as one continuous swatch. Row 1's available stitches come
-    from foundation_length (see build_test_foundation()). Every row after
-    that uses the PREVIOUS row's actual produced count -- computed the
-    same way check_full_row() computes it for any other row, reused here
-    rather than reimplemented.
+    Walks a list of proposed rows (each supplying only its "setup" and
+    "repeat" stitch structure, in order) as one continuous test swatch.
+    Every row's repeat unit -- including row 1 -- is worked
+    test_repeat_count times: the SAME fixed count used to build
+    foundation_length (see build_test_foundation()), chosen by us.
+
+    A row's own proposed "repeat_count" field is never read here. Using
+    it for row 1 would check row 1 against a foundation sized for a
+    DIFFERENT repeat count than the one actually simulated -- row 1
+    would then fail (or pass) for reasons that have nothing to do with
+    whether its stitch structure is sound, only whether the AI's row-1
+    repeat_count happened to match our test_repeat_count. Using it for
+    row 2 onward is exactly the circularity build_test_foundation()'s
+    docstring warns about. The AI's proposed repeat_count is only ever a
+    data point worth noting elsewhere -- never a number this function
+    simulates against, for any row.
+
+    Row 1's available stitches come from foundation_length. Every row
+    after that uses the PREVIOUS row's actual produced count -- computed
+    the same way check_full_row() computes it for any other row, reused
+    here rather than reimplemented.
 
     Stops at the first row that fails. Returns either:
       {"success": False, "failed_at_row": <1-indexed row number>,
@@ -69,7 +84,7 @@ def simulate_swatch(rows, foundation_length):
     available = foundation_length
 
     for row_number, row in enumerate(rows, start=1):
-        result = check_full_row(row, row["repeat_count"], available)
+        result = check_full_row(row, test_repeat_count, available)
         trail.append({"row_number": row_number, **result})
 
         if not result["valid"]:

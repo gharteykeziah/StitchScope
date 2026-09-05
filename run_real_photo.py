@@ -40,15 +40,19 @@ def report_region(region):
     print(f"   Foundation chain: {foundation_length} stitches "
           f"(test swatch: {TEST_REPEAT_COUNT} repeats of row 1's structure)")
 
-    result = simulate_swatch(rows, foundation_length)
+    result = simulate_swatch(rows, foundation_length, test_repeat_count=TEST_REPEAT_COUNT)
 
     for entry in result["trail"]:
         row = rows[entry["row_number"] - 1]
+        # The AI's own proposed repeat_count is never simulated (see
+        # simulate_swatch()'s docstring) -- surfaced here only as a data
+        # point, not as something that was actually tested.
+        ai_note = f" [AI proposed repeat_count={row['repeat_count']}, not simulated]"
         if entry["valid"]:
-            print(f"   Row {entry['row_number']}: {render_row(row, row['repeat_count'])}")
+            print(f"   Row {entry['row_number']}: {render_row(row, TEST_REPEAT_COUNT)}{ai_note}")
         else:
             print(f"   Row {entry['row_number']}: FAILED -- needed {entry['consumed']} stitches, "
-                  f"only {entry['stitches_available']} were available from the row before it")
+                  f"only {entry['stitches_available']} were available from the row before it{ai_note}")
 
     if result["success"]:
         print(f"   Swatch holds up across all {len(rows)} proposed rows.")
