@@ -29,7 +29,7 @@ class Token:
 
 
 class TokenizeError(Exception):
-    """Raised when the source text contains something the lexer doesn't recognize."""
+    """Raised when the source text contains something the lexer(tokenizer) doesn't recognize."""
     pass
 
 
