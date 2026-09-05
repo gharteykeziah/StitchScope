@@ -15,7 +15,7 @@ later row's available stitches from what the row before it actually
 produced -- not from anything the AI proposed.
 """
 
-from engine.validator import check_full_row
+from engine.validator import check_full_row, new_chain_links
 
 
 def build_test_foundation(setup_steps, repeat_steps, test_repeat_count=6):
@@ -23,7 +23,29 @@ def build_test_foundation(setup_steps, repeat_steps, test_repeat_count=6):
     Computes the foundation chain length to use for TESTING a region's
     first row as a physical swatch: the setup's one-time consumed
     stitches, plus the repeat's consumed stitches worked test_repeat_count
-    times.
+    times -- PLUS any brand-new chain links row 1's setup itself adds.
+
+    That last part matters and is easy to get wrong: a CH step inside
+    row 1's setup (e.g. "chain 2, skip 1" before a DC-based repeat) is
+    not like a CH inside the repeat, and not like a later row's turning
+    chain. It's worked before row 1 has touched the foundation at all,
+    so it necessarily extends the SAME starting chain you cast on --
+    those links have to be included in how many stitches you physically
+    chain, on top of whatever setup/repeat actually consume from the
+    foundation. Skipping this made the foundation come out too SHORT:
+    a setup of "chain 2, skip 1" plus a 6x "DC, chain 1" repeat was
+    computing a foundation of 7 (1 skip + 6 DC insertions), silently
+    dropping the 2 fresh chain links setup itself adds -- 9 is correct.
+
+    A later row's turning_chain never needs this treatment: it's built
+    from an already-attached working loop at the end of the previous
+    row, not pre-chained into anything, so its CH steps are genuinely
+    free the way STITCH_RULES already treats them. Same for any CH
+    inside the repeat itself (a floating chain-space hung off a stitch
+    that's already been worked) -- also genuinely free. Only setup's
+    OWN chain-producing steps need this extra credit, because setup is
+    the one place a CH step can run before any stitch exists to hang it
+    off of.
 
     test_repeat_count is a number WE choose (default 6) for the purpose
     of building a test swatch -- it is never read from anything the AI
@@ -34,14 +56,14 @@ def build_test_foundation(setup_steps, repeat_steps, test_repeat_count=6):
     the swatch check an independent test of the model's proposed stitch
     math, not a restatement of it.
 
-    Reuses check_full_row() for the actual per-step consumed/produced
-    math rather than reimplementing it -- stitches_available is set to
-    infinity here because we only want the "consumed" figure back, not
-    whether it happens to fit anything.
+    Reuses check_full_row() for the setup/repeat consumed math rather
+    than reimplementing it -- stitches_available is set to infinity here
+    because we only want the "consumed" figure back, not whether it
+    happens to fit anything.
     """
     probe_row = {"setup": setup_steps, "repeat": repeat_steps}
     result = check_full_row(probe_row, repeat_count=test_repeat_count, stitches_available=float("inf"))
-    return result["consumed"]
+    return result["consumed"] + new_chain_links(setup_steps)
 
 
 def simulate_swatch(rows, foundation_length, test_repeat_count=6):

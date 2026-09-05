@@ -26,6 +26,35 @@ def _totals(steps):
     return consumed, produced
 
 
+def step_totals(steps):
+    """
+    Public wrapper around _totals(): total (consumed, produced) for a
+    flat list of steps. Exists so other engine modules (engine/swatch.py)
+    can get per-step-list totals without reaching into a private helper.
+    """
+    return _totals(steps)
+
+
+def new_chain_links(steps):
+    """
+    How many brand-new chain LINKS a flat list of steps adds -- as
+    opposed to a stitch TOP produced by working into something that
+    already exists (DC/SC/etc.), or a floating chain-space created
+    mid-fabric. Only CH steps count: each one is a literal new link on
+    whatever chain is currently being made.
+
+    This distinction matters specifically for row 1's setup (see
+    engine/swatch.py's build_test_foundation()): a CH step there is
+    worked before anything else exists, so it necessarily extends the
+    SAME starting chain you're casting on -- it must be added to how
+    many stitches you physically chain, not just counted as something
+    that gets "produced" for free the way a later row's turning chain
+    is (that one starts from an already-attached working loop, no
+    pre-chaining needed).
+    """
+    return sum(step["count"] for step in steps if step["stitch"] == "CH")
+
+
 def check_row(row_steps, stitches_available):
     """Checks a simple flat list of steps (no setup/repeat split)."""
     consumed, produced = _totals(row_steps)

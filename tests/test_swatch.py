@@ -30,6 +30,31 @@ class BuildTestFoundationTests(unittest.TestCase):
         repeat_steps = [{"stitch": "DC", "count": 1}]
         self.assertEqual(build_test_foundation(setup_steps, repeat_steps), 6)
 
+    def test_setups_own_chain_steps_extend_the_foundation(self):
+        # This is the real filet-mesh case that exposed the bug: setup
+        # is "chain 2, skip 1" (a lead-in before a DC-based repeat), and
+        # repeat is "DC 1, chain 1" worked 6 times.
+        #
+        # consumed = setup's SKIP 1 (1) + repeat's DC 1 x6 (6) = 7
+        # setup's own CH 2 adds 2 brand-new chain links on top of that,
+        # since nothing has been worked into the foundation yet when
+        # that CH runs -- those links must be physically chained too.
+        # Correct foundation = 7 + 2 = 9, not 7.
+        setup_steps = [{"stitch": "CH", "count": 2}, {"stitch": "SKIP", "count": 1}]
+        repeat_steps = [{"stitch": "DC", "count": 1}, {"stitch": "CH", "count": 1}]
+        self.assertEqual(build_test_foundation(setup_steps, repeat_steps, test_repeat_count=6), 9)
+
+    def test_repeats_own_chain_steps_do_not_extend_the_foundation(self):
+        # A CH inside the REPEAT (not setup) is a floating chain-space
+        # hung off a stitch that's already been worked into the
+        # foundation -- it must NOT get the same treatment as a CH in
+        # setup. This is the "chain 1" after each DC in the mesh repeat:
+        # it should never inflate the foundation length.
+        setup_steps = []
+        repeat_steps = [{"stitch": "DC", "count": 1}, {"stitch": "CH", "count": 1}]
+        # consumed = DC 1 x6 = 6; no setup CH steps to add.
+        self.assertEqual(build_test_foundation(setup_steps, repeat_steps, test_repeat_count=6), 6)
+
     def test_ignores_any_repeat_count_the_row_itself_might_carry(self):
         # build_test_foundation only ever takes raw setup/repeat steps, not
         # a full row dict with its own "repeat_count" -- there's nothing

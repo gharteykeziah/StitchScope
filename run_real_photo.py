@@ -38,6 +38,7 @@ from engine.plausibility import check_setup_not_oversized, run_plausibility_chec
 from engine.renderer import render_row
 from engine.schema import validate_proposal
 from engine.swatch import build_test_foundation, simulate_swatch
+from engine.validator import new_chain_links
 from engine.vision import get_stitch_recipe, get_vision_proposal_from_photo, VisionProposalError
 
 # How many times to work the recipe's repeat, purely for building a
@@ -118,15 +119,27 @@ def report_region(region):
     rows = [row_1] + [later_row] * (NUM_TEST_ROWS - 1)
 
     foundation_length = build_test_foundation(row_1["setup"], row_1["repeat"], test_repeat_count=TEST_REPEAT_COUNT)
-    print(f"   Foundation chain: {foundation_length} stitches "
+    lead_in_chains = new_chain_links(row_1["setup"])
+    print(f"   Foundation: chain {foundation_length} stitches to start "
           f"(test swatch: {TEST_REPEAT_COUNT} repeats of the recipe's repeat unit)")
+    if lead_in_chains:
+        print(f"     -- that total already includes the {lead_in_chains} chain "
+              f"stitch(es) row 1's own setup below adds; don't chain those again.")
 
     result = simulate_swatch(rows, foundation_length, test_repeat_count=TEST_REPEAT_COUNT)
 
     for entry in result["trail"]:
         row = rows[entry["row_number"] - 1]
         if entry["valid"]:
-            print(f"   Row {entry['row_number']}: {render_row(row, TEST_REPEAT_COUNT)}")
+            if entry["row_number"] == 1 and lead_in_chains:
+                # Row 1's own CH steps were already counted into the
+                # foundation total above -- rendering them again here
+                # as if they're a fresh action would double them.
+                display_setup = [s for s in row["setup"] if s["stitch"] != "CH"]
+                display_row = {"setup": display_setup, "repeat": row["repeat"]}
+                print(f"   Row {entry['row_number']}: {render_row(display_row, TEST_REPEAT_COUNT)}")
+            else:
+                print(f"   Row {entry['row_number']}: {render_row(row, TEST_REPEAT_COUNT)}")
         else:
             print(f"   Row {entry['row_number']}: FAILED -- needed {entry['consumed']} stitches, "
                   f"only {entry['stitches_available']} were available from the row before it")
