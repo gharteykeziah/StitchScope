@@ -1,4 +1,4 @@
-# StitchScope Recipe Model v2 — Design (Phase 1), now with schema enforcement (Phase 2), a foundation calculator (Phase 3), and row-1 math validation (Phase 4A)
+# StitchScope Recipe Model v2 — Design (Phase 1), now with schema enforcement (Phase 2), a foundation calculator (Phase 3), row-1 math validation (Phase 4A), and typed later-row validation (Phase 5)
 
 **Status: still not wired into the production photo pathway.**
 `engine/vision.py`, `engine/swatch.py` (its own, different v1 foundation
@@ -12,9 +12,13 @@ shape this document designs. Phase 3 added
 foundation calculator" for what it does and doesn't do. Phase 4A added
 `engine/recipe_validator.py`'s `validate_row_1_against_foundation()` —
 see "Phase 4A: row-1 math validation" for what it checks and why
-later-row validation isn't part of it. The rest of this document
-(sections 1–11) is the original Phase 1 design discussion, left as
-written; only this status note and the Phase 3/4A sections are new.
+later-row validation isn't part of it. Phase 5 added
+`engine/later_row_validator.py`'s `validate_recipe_rows()` — see "Phase
+5: typed later-row validation" for how it resolves (or explicitly
+refuses to resolve) the open questions Phase 4A left for it. The rest
+of this document (sections 1–11) is the original Phase 1 design
+discussion, left as written; only this status note and the Phase
+3/4A/5 sections are new.
 
 *This is the corrected revision of the Phase 1 design. See the changelog
 at the bottom for what that correction pass fixed and why.*
@@ -549,7 +553,226 @@ touched by this function at all — turning-chain interpretation, whether
 `next_dc` passes over chain spaces, whether a `counts_as` DC can be
 targeted by `next_dc`, and connected multi-row simulation over the typed
 model remain exactly as unresolved as section 11 leaves them. That is
-Phase 4B and later, not covered here.
+Phase 5, covered next.
+
+## Phase 5: typed later-row validation
+
+`engine/later_row_validator.py`'s **`validate_recipe_rows(recipe,
+requested_repeat_count, later_row_count)`** validates a chain of rows —
+row 1, then `later_row_count` later rows — each one fed the row
+before it's ACTUAL typed output, never a claimed or assumed number.
+Row 1 itself is delegated wholesale to Phase 4A's
+`validate_row_1_against_foundation()`, not reimplemented.
+
+**Typed AND ordered, never a total, and never an unordered per-type
+count either.** This is the central rule the whole module exists to
+enforce, in two layers. First: a previous row containing 6 DC posts + 6
+chain spaces is NOT the same input as a row containing 12 DC posts + 0
+chain spaces, even though both sum to 12 "workable positions" — a
+`next_dc` step needs a DC post specifically; a `next_chain_space` step
+needs a chain space specifically; neither substitutes for the other.
+Second, and just as important: two rows can have IDENTICAL typed totals
+and still be different inputs. A row that produced "DC, chain space,
+SC" is not the same sequence as one that produced "SC, chain space,
+DC," even though both are `{"stitch_posts": {"DC": 1, "SC": 1},
+"chain_spaces": 1}`. `next_stitch`, `next_dc`, `next_chain_space`, and
+`SKIP` are TRAVERSAL instructions — "the next one, moving forward" — a
+question an unordered per-type count cannot answer at all. Every row's
+actual production is therefore kept as an **ordered list** of small
+target entries (`{"kind": "stitch_post"|"chain_space", "stitch":
+<code>|None, "source": "literal"|"counts_as"}`, one per physical
+position, in real left-to-right order — see `engine/recipe_validator.py`
+and `engine/later_row_validator.py`'s module docstrings for the exact
+shape), walked with a single forward-only cursor. The aggregate
+`produced_structure` dict still exists, for summaries and for
+`expected_swatch_structure`-style comparisons, but it is now a
+**projection derived from the ordered list**, never an independent fact,
+and traversal logic never reads it.
+
+**Resolved placement semantics, via the ordered cursor** (the full
+reasoning for each is in `engine/later_row_validator.py`'s module
+docstring; summarized here):
+
+- **`turning_chain`** never touches the input cursor at all (it
+  consumes nothing from the previous row — CH always consumes 0). With
+  `counts_as`, it REPLACES this step's own contribution entirely — the
+  ordered output gains exactly `counts_as.stitch_posts` and
+  `counts_as.chain_spaces` worth of entries (each tagged `source:
+  "counts_as"`), not those numbers *plus* the raw CH production (a real
+  "ch 4" turning chain is one edge, not 4 separate chain spaces; adding
+  both would double-count, contradicting section 5's own "changes how
+  many stitch posts and chain spaces this step is credited with
+  producing"). Without `counts_as`, it behaves exactly like a bare
+  `working_loop` chain: raw `produces × count` "literal" chain-space
+  entries, no stitch-post credit. It establishes a new target only when
+  `counts_as` declares something positive; otherwise it preserves
+  whatever target already existed — the same rule Phase 4A already
+  applies to bare `working_loop` chains.
+- **`next_stitch`** is a forward search from the input cursor for the
+  next entry whose kind is `stitch_post`, regardless of code or source.
+  Every entry the search passes over — a chain space, or a stitch post
+  of a type this step didn't ask for — moves BEHIND the cursor and can
+  never be targeted as "next" again, by this step or any later one in
+  this row or a subsequent row: crochet doesn't work backward across a
+  row. Nothing here is decided by alphabetical order or any other
+  unordered tie-break; it is decided purely by position. (An earlier
+  version of this module picked among same-type candidates via
+  `sorted(pool)` on an unordered dict — that was never valid crochet
+  traversal and has been replaced entirely by this cursor walk; see the
+  fourth correction pass in the changelog.) No matching entry anywhere
+  ahead of the cursor is a reported failure, never a silent chain-space
+  grab.
+- **`next_dc`** is a forward search from the input cursor for the next
+  entry whose kind is `stitch_post` and stitch is `DC` specifically —
+  SC, HDC, and chain spaces are never matched no matter how close to
+  the cursor they sit; they are passed over (and lost) like anything
+  else not being searched for. If the found entry's source is
+  `"literal"`, it's consumed and the result is unambiguous. If its
+  source is `"counts_as"`, `validate_recipe_rows()` REFUSES TO GUESS and
+  raises `RecipeMathError` — not even by skipping ahead to search for a
+  LATER literal DC, since that would itself be a guess about whether the
+  counts_as one may be passed over. Whether `next_dc` may legally
+  resolve to a stitch that exists only because of `counts_as` is exactly
+  open question 4 in section 11, and is not decided here either way. If
+  no DC entry exists anywhere ahead of the cursor, that's a plain,
+  reported shortfall.
+- **`next_chain_space`** is a forward search from the input cursor for
+  the next entry whose kind is `chain_space`. None found ahead of the
+  cursor is a reported failure. Multiple stitches worked into the SAME
+  chain space are one `next_chain_space` step (which moves the cursor
+  past that one entry) followed by `same_stitch` steps (which do not
+  move the cursor again).
+- **`same_stitch`** never moves the input cursor and never searches
+  anything; it requires only that a target was already established
+  earlier in this row's continuous processing (raises `RecipeMathError`
+  if not) and is forbidden on a SKIP step (raises `RecipeMathError`) —
+  both exactly as Phase 4A already established for row 1. An
+  intervening `working_loop` (or a counts_as-less `turning_chain`) does
+  not clear the remembered target.
+- **`SKIP`** performs the exact same forward search and cursor advance
+  that placement would for any other stitch (including `next_dc`'s
+  counts_as-eligibility check — skipping an ambiguous position is
+  exactly as unresolved as stitching into it), produces no new ordered
+  entry, and clears the established target afterward — identical to how
+  Phase 4A treats a `next_foundation_chain` SKIP on row 1. SKIP with
+  `same_stitch` remains invalid.
+
+**A later row's own ordered output, and the TURN before it becomes the
+next row's input.** Every row's `setup_result` and `repeat_result` each
+carry their own `ordered_output`; concatenated (setup's entries first,
+then every executed repeat pass's in order), they form the row's own
+`ordered_output` — always in that row's actual production order, never
+reversed or reinterpreted, so it can always be read as "left to right,
+as this row was worked" regardless of which row it came from.
+`output_structure` (the aggregate summary) and
+`output_counts_as_stitch_posts` (the counts_as-only slice, so a later
+`next_dc` several rows down can still tell literal DC apart from
+counts_as-derived DC) are both projections computed from that ordered
+list, never tracked independently of it.
+
+Flat crochet turns the work at the end of every row: you finish
+left-to-right, flip the fabric over, and the next row is worked
+right-to-left relative to the piece — so the first target the next
+row's cursor meets is the LAST one the previous row produced, not the
+first. `validate_recipe_rows()` performs exactly this reversal, once,
+whenever it hands one row's finished output to the next row: a row's
+`ordered_input` is `list(reversed(previous_row["ordered_output"]))`, a
+brand-new list built fresh at that hand-off — never the previous row's
+`ordered_output` reused as-is, and never mutated in place (reversing
+twice would silently model turning back over two edges, i.e. not
+turning at all, so each hand-off reverses exactly once). Concretely: if
+row 1 produces `[DC, chain_space, SC]` (in that order), row 2 receives
+`[SC, chain_space, DC]` — a `next_stitch` step in row 2 therefore lands
+on the SC first, not the DC, even though the DC was produced first. Row
+3 then receives `reversed(row 2's ordered_output)`, and so on for every
+row after that.
+
+**This validator supports flat, turned rows only.** Crochet also has
+continuous-round construction (worked in a spiral, never turned, so the
+next round continues in the SAME direction the previous one finished
+in rather than reversing). Schema v2 has no field anywhere recording
+whether a recipe is flat or worked in continuous rounds — there is
+nothing in a recipe dict this module could inspect to tell the two
+apart. Rather than guess which behavior a given recipe wants, this
+module always applies the flat-row turn described above; a recipe
+actually intended as continuous rounds will be validated as if every
+row were turned, which is not correct for that construction, and this
+module has no way to detect that mismatch from the data available to
+it today. Supporting continuous rounds for real would require a new
+schema field (e.g. a `construction` enum of `"flat"` / `"round"`) this
+validator could branch on — until that field exists, "flat, turned
+rows" is stated explicitly as Phase 5's only supported construction,
+not silently assumed.
+
+**Later-row repeat count is DERIVED BY WALKING THE CURSOR, never
+assumed, and never computed by subtracting unordered per-type totals.**
+Unlike row 1 (whose repeat count is `requested_repeat_count`, an
+explicit caller choice), the v2 schema has no field stating how many
+times `later_rows.repeat` should run. `validate_recipe_rows()` derives
+it by actually running `later_rows.repeat`, pass after pass, moving the
+SAME forward-only cursor across the row's ordered input each time,
+until a pass can no longer complete — the number of passes that DID
+complete is `repeat_execution_count`. This is never assumed to equal
+`requested_repeat_count`, even though a well-formed recipe will
+typically make them equal by construction, and it is deliberately never
+computed by dividing an unordered pool size by a per-pass consumption
+count — that would silently throw away exactly the position information
+this redesign exists to keep (a per-type division can't know that a
+later pass's `next_dc` needs to pass over an intervening chain space it
+hasn't reached yet). If `later_rows.repeat` never moves the cursor at
+all (every step is `same_stitch`/`working_loop`), nothing constrains
+how many times it could run; that row's `repeat_count_derivable` is
+reported `False` with a clear message, never a guessed number.
+**Resolving this for real would require a new field the current schema
+doesn't have** — e.g. an explicit `later_rows.repeat_count` the AI must
+state, or a declared per-repeat consumption contract this validator
+could check claims against — see `engine/later_row_validator.py`'s
+module docstring for the same statement in code.
+
+**Leftover input is reported, not automatically invalid — but "leftover"
+now means the SUFFIX after the final cursor position, not merely
+anything untouched by type.** Unlike row 1 vs. the foundation formula
+(which must describe the exact same physical chain, so any gap either
+direction is an error), a later row legitimately may not target
+everything the row before it produced — a real filet-mesh repeat's "dc
+in next dc, ch 1" passes right over the previous row's chain space by
+design, leaving it as the mesh's open hole rather than something to
+consume. `remaining_unused_input_targets` reports this honestly without
+deciding it's wrong. Because the cursor only ever moves forward, an
+entry the cursor passed OVER while searching for something else (rather
+than reaching the tail end untouched) is already gone by the time the
+row finishes — it is not reported as "remaining" even though no step
+ever explicitly claimed it; see
+`tests/test_later_row_validator.py`'s `OrderMattersTests` for a
+concrete pair of recipes with identical row-1 totals whose row-2
+leftovers differ purely because of this. What DOES make a later row
+invalid is `attempted_overdraw`: `later_rows.setup` demanding more of
+some type than exists ahead of the cursor, or `later_rows.repeat`
+failing to complete even a single pass against the actual input (there
+is no notation in this recipe model for "run this later row's repeat
+zero times on purpose," so that is always reported as a genuine
+mismatch, not a benign leftover).
+
+**Stops at the first invalid row.** If row 1 is invalid, no later row
+is ever evaluated (`first_failing_row: 1`, `later_rows: []`). If a
+later row fails, every row after it is left unevaluated —
+`later_rows` in the returned report contains only the rows actually
+attempted, up to and including the failing one.
+
+**`verification.status` is never touched**, exactly like Phase 4A: a
+`True` result here does not make a recipe `CONFIRMED` (or even
+`SIMULATION_VALID` — this module writes to `verification` nowhere at
+all), and a `False` result does not mutate it to `REJECTED`. This
+function only reports evidence.
+
+**What remains explicitly unresolved, not guessed at:** the
+`next_dc`/counts_as eligibility gap (raises `RecipeMathError`, citing
+open question 4) and the later-row repeat-count derivation when the
+repeat touches neither pool (`repeat_count_derivable: False`, citing
+the missing schema field above) — see
+`tests/test_later_row_validator.py`'s `NextDcCountsAsAmbiguityTests`
+and `AmbiguousRepeatCountTests` for concrete, hand-checkable examples of
+both.
 
 ## Changelog — first correction pass
 
@@ -649,3 +872,121 @@ Phase 4B and later, not covered here.
    `produced_structure`, `unused_foundation_positions`,
    `overdrawn_foundation_positions`, the expected-repeat comparisons,
    `valid`, `errors`) are unchanged in shape and meaning.
+
+## Changelog — fourth correction pass (Phase 5 ordering fix)
+
+1. **Replaced Phase 5's unordered typed pools with an ordered target
+   list and a forward-only cursor.** The first Phase 5 implementation
+   represented a row's typed output as two aggregate dicts —
+   `stitch_posts: {code: int}` and `chain_spaces: int` — the same shape
+   `produced_structure` already used for summaries. That shape cannot
+   distinguish a row that produced "DC, chain space, SC" from one that
+   produced "SC, chain space, DC," even though `next_stitch`, `next_dc`,
+   `next_chain_space`, and SKIP are all TRAVERSAL instructions —
+   "the next one, moving forward" — a question an unordered count can't
+   answer. Concretely, `next_stitch` picked among same-type candidates
+   via `sorted(pool["stitch_posts"])`, which is not, and was never
+   claimed to be, valid crochet traversal (there is no reason a real
+   row's next stitch would be whichever stitch code sorts first
+   alphabetically). Every row's actual production is now kept as an
+   ordered list of `{"kind", "stitch", "source"}` entries, one per
+   physical position, in real left-to-right order (see
+   `engine/recipe_validator.py` and `engine/later_row_validator.py`'s
+   module docstrings for the exact shape and full placement-by-placement
+   cursor rules). `produced_structure` still exists, but only as a
+   projection derived from the ordered list, never read by traversal
+   logic itself.
+2. **Extended Phase 4A's report with `ordered_output`, without removing
+   or renaming any existing field.** `validate_row_1_against_foundation()`
+   now returns `ordered_output` alongside `produced_structure` in
+   `setup`, `repeat_once`, `repeat_total`, and the combined `row_1` —
+   row 1's own production, in order, since it seeds row 2's ordered
+   input. Row 1 itself never needs to READ an ordered input (it draws
+   from the foundation chain via a flat consumed count, not from a
+   previous row's output), so this is purely an addition on the output
+   side; every field Phase 4A already documented is unchanged in shape
+   and meaning.
+3. **Redefined what "remaining unused input" means.** Because the
+   cursor only moves forward, an entry it passed OVER while searching
+   for something else is gone by the time a row finishes processing —
+   it is no longer reported as "remaining" merely because no step
+   explicitly claimed it, the way the unordered-pool version would have
+   reported it. "Remaining" now specifically means the suffix of the
+   previous row's ordered output the cursor never reached at all. Two
+   recipes whose row 1 has identical aggregate totals can therefore
+   report different leftovers in row 2 purely because of production
+   order — see `tests/test_later_row_validator.py`'s `OrderMattersTests`
+   for a concrete pair demonstrating this.
+4. **The `next_dc`/counts_as eligibility check now operates on a single
+   found position's `source` tag, not on separate literal/counts_as pool
+   counts.** The conclusion is unchanged (still refuses to guess,
+   raising the same `RecipeMathError`), but the check is now more
+   crochet-faithful: it fires on whichever DC-shaped position the cursor
+   actually reaches next, even if a "safer" literal DC exists later in
+   the row — skipping ahead to that later one would itself be a guess
+   about whether the closer, ambiguous one may be passed over, which
+   this module still refuses to make.
+5. **Repeat-count derivation is now a real cursor walk, not per-type
+   floor division.** The number of times `later_rows.repeat` can run was
+   already derived by executing real passes rather than being assumed
+   equal to `requested_repeat_count` (unchanged from the original Phase
+   5 design) — but each pass's success or failure is now decided by
+   whether the ordered cursor can complete a full pass, never by
+   comparing unordered per-type totals. This matters concretely: a pass
+   can fail even when the aggregate pool would appear to have "enough"
+   of every type, if reaching what it needs requires passing over (and
+   losing) something an earlier step in the same pass already needed —
+   see `NextChainSpaceRespectsOrderTests` and `CannotMoveBackwardTests`
+   in `tests/test_later_row_validator.py`.
+
+## Changelog — fifth correction pass (Phase 5 row-turn direction fix)
+
+1. **A row's ordered input is now the REVERSE of the previous row's
+   ordered output, not that same list reused unchanged.** The fourth
+   correction pass introduced the ordered cursor but passed one row's
+   `ordered_output` straight into the next row's `_validate_one_later_row()`
+   call as its `ordered_input`, and the original tests explicitly
+   asserted this was unchanged. That models a crocheter continuing in
+   the SAME direction after finishing a row, which is what continuous
+   rounds do — not what flat, turned rows do. In flat crochet you turn
+   the work at the end of every row, so the next row's cursor meets the
+   previous row's production in reverse: if row 1 produces `[DC, chain
+   space, SC]`, row 2 must receive `[SC, chain space, DC]`, not `[DC,
+   chain space, SC]` again. `validate_recipe_rows()` now builds each
+   row's input as `list(reversed(previous_row's ordered_output))` — a
+   fresh list at every hand-off, reversed exactly once, never mutating
+   the previous row's stored `ordered_output` and never applied twice in
+   a row (which would silently cancel out and stop modeling a turn at
+   all).
+2. **Clarified what `ordered_output` means, precisely, everywhere it
+   appears.** It is now stated explicitly, in both this document and
+   `engine/later_row_validator.py`'s module docstring, that
+   `ordered_output` ALWAYS means "the order this row's own steps
+   actually produced these targets, left to right" — never the order
+   the next row will traverse them in. The turn/reversal is entirely the
+   orchestrating function's responsibility at the moment it hands one
+   row's output to the next row's input; no row's own `ordered_output`
+   field is ever itself reversed, and `ordered_input` (a field only
+   later rows have) is the one place the already-turned list appears.
+3. **Stated explicitly that this validator supports flat, turned rows
+   only**, and that continuous-round construction (where consecutive
+   rows/rounds are worked in the same direction, never turned) is
+   unsupported — not silently mishandled, but not guessed at either.
+   Schema v2 has no field distinguishing the two constructions, so
+   there is nothing this validator could branch on; supporting rounds
+   for real would need a new field (e.g. a `construction` enum). See
+   this document's "Phase 5" section, "This validator supports flat,
+   turned rows only," and the same statement in
+   `engine/later_row_validator.py`'s module docstring
+   ("FLAT ROWS ONLY -- CONTINUOUS ROUNDS ARE NOT SUPPORTED").
+4. **Corrected every Phase 5 test whose expected result depended on
+   direction.** Several tests built a specific row-1 production order
+   expecting a specific row-2 traversal outcome; since row 2 now
+   receives the REVERSE of what it received before this fix, a number
+   of fixtures needed their row-1 step order swapped (not their
+   assertions loosened) to keep testing the same claim under the
+   corrected direction — for example, `NextChainSpaceRespectsOrderTests`
+   and `OrderMattersTests`. New tests were added specifically for the
+   turn itself (`OrderedOutputThreadingTests`) and for proving the
+   reversal never mutates an already-returned report's stored lists
+   (`NoMutationTests.test_turning_a_rows_output_does_not_mutate_the_stored_report`).
