@@ -73,6 +73,27 @@ all (turning_chain, the only placement counts_as ever attaches to, is
 not a legal row_1 placement), so there's nothing for this analyzer to
 read there.
 
+ORDERED OUTPUT (for Phase 5's later-row traversal)
+
+Alongside the aggregate produced_structure, this module also builds
+"ordered_output": a list of the same production, in the row's actual
+LEFT-TO-RIGHT physical order -- one entry per unit produced, each shaped
+{"kind": "stitch_post"|"chain_space", "stitch": <code>|None, "source": "literal"}.
+row_1 can never produce a "counts_as"-sourced entry (schema v2 forbids
+counts_as on row_1 entirely), so every row_1 entry's source is always
+"literal" -- the field exists here only so Phase 5's later rows, which
+DO need it, share one entry shape across every row. The aggregate
+produced_structure is a SUMMARY of ordered_output, not an independent
+fact: `sum(1 for e in ordered_output if e["kind"]=="stitch_post" and
+e["stitch"]==code) == produced_structure["stitch_posts"][code]` and
+`sum(1 for e in ordered_output if e["kind"]=="chain_space") ==
+produced_structure["chain_spaces"]` hold for every produced_structure
+this module returns. Phase 5's later-row traversal (next_stitch,
+next_dc, next_chain_space, SKIP) reads ordered_output with a moving
+cursor -- never the aggregate dict, which cannot distinguish "DC, chain
+space, SC" from "SC, chain space, DC" even though both have identical
+stitch_posts/chain_spaces totals.
+
 TRUST
 
 A True result here does not make a recipe CONFIRMED, and a False result
@@ -89,6 +110,12 @@ not a new decision this module is making on its own.
 from engine.foundation import calculate_foundation
 from engine.schema import validate_recipe_v2
 from engine.validator import STITCH_RULES
+
+
+def _target(kind, stitch=None, source="literal"):
+    """One ordered-output entry -- see this module's docstring ("ORDERED
+    OUTPUT") for the shape and why it exists alongside produced_structure."""
+    return {"kind": kind, "stitch": stitch, "source": source}
 
 
 class RecipeMathError(ValueError):
@@ -117,11 +144,14 @@ def _analyze_row1_steps(steps, target_established):
     re-derived from setup each time.
 
     Returns (consumed_foundation_positions, produced_structure,
-    target_established_after_these_steps).
+    ordered_output, target_established_after_these_steps).
+    ordered_output is this step list's production in actual left-to-right
+    order -- see this module's docstring ("ORDERED OUTPUT").
     """
     consumed = 0
     stitch_posts = {}
     chain_spaces = 0
+    ordered_output = []
 
     for step in steps:
         stitch = step["stitch"]
@@ -131,6 +161,7 @@ def _analyze_row1_steps(steps, target_established):
 
         if placement == "working_loop":
             chain_spaces += rule["produces"] * count
+            ordered_output.extend(_target("chain_space") for _ in range(rule["produces"] * count))
             # target_established is left untouched -- a working-loop
             # chain doesn't touch the foundation, so it preserves
             # whatever position a prior placing step most recently
@@ -141,6 +172,7 @@ def _analyze_row1_steps(steps, target_established):
             produced_count = rule["produces"] * count
             if produced_count:
                 stitch_posts[stitch] = stitch_posts.get(stitch, 0) + produced_count
+                ordered_output.extend(_target("stitch_post", stitch) for _ in range(produced_count))
             target_established = produced_count > 0
 
         elif placement == "same_stitch":
@@ -158,6 +190,7 @@ def _analyze_row1_steps(steps, target_established):
             produced_count = rule["produces"] * count
             if produced_count:
                 stitch_posts[stitch] = stitch_posts.get(stitch, 0) + produced_count
+                ordered_output.extend(_target("stitch_post", stitch) for _ in range(produced_count))
             # target_established stays True -- the referenced position is unchanged.
 
         else:
@@ -175,7 +208,7 @@ def _analyze_row1_steps(steps, target_established):
         "chain_spaces": chain_spaces,
         "total_workable_positions": total_workable_positions,
     }
-    return consumed, produced_structure, target_established
+    return consumed, produced_structure, ordered_output, target_established
 
 
 def _empty_produced_structure():
@@ -256,7 +289,7 @@ def validate_row_1_against_foundation(recipe, requested_repeat_count):
     setup_steps = recipe["row_1"]["setup"]
     repeat_steps = recipe["row_1"]["repeat"]
 
-    setup_consumed, setup_produced, target_after_setup = _analyze_row1_steps(
+    setup_consumed, setup_produced, setup_ordered, target_after_setup = _analyze_row1_steps(
         setup_steps, target_established=False
     )
 
@@ -267,23 +300,31 @@ def validate_row_1_against_foundation(recipe, requested_repeat_count):
     # pass by pass. Any RecipeMathError a given pass raises (e.g. a
     # same_stitch that only becomes invalid partway through the repeats)
     # surfaces at that pass, matching the row's real execution order.
+    # ordered_output accumulates the same way, in real left-to-right
+    # order: pass 1's production comes immediately after setup's, pass
+    # 2's immediately after pass 1's, and so on.
     target = target_after_setup
     repeat_consumed = None
     repeat_produced = None
+    repeat_ordered = None
     repeat_total_consumed = 0
     repeat_total_produced = _empty_produced_structure()
+    repeat_total_ordered = []
     for pass_index in range(requested_repeat_count):
-        pass_consumed, pass_produced, target = _analyze_row1_steps(
+        pass_consumed, pass_produced, pass_ordered, target = _analyze_row1_steps(
             repeat_steps, target_established=target
         )
         if pass_index == 0:
             repeat_consumed = pass_consumed
             repeat_produced = pass_produced
+            repeat_ordered = pass_ordered
         repeat_total_consumed += pass_consumed
         repeat_total_produced = _merge_produced_structures(repeat_total_produced, pass_produced)
+        repeat_total_ordered.extend(pass_ordered)
 
     row1_consumed = setup_consumed + repeat_total_consumed
     row1_produced = _merge_produced_structures(setup_produced, repeat_total_produced)
+    row1_ordered = setup_ordered + repeat_total_ordered
 
     unused = max(0, foundation_count - row1_consumed)
     overdrawn = max(0, row1_consumed - foundation_count)
@@ -339,18 +380,22 @@ def validate_row_1_against_foundation(recipe, requested_repeat_count):
         "setup": {
             "consumed_foundation_positions": setup_consumed,
             "produced_structure": setup_produced,
+            "ordered_output": setup_ordered,
         },
         "repeat_once": {
             "consumed_foundation_positions": repeat_consumed,
             "produced_structure": repeat_produced,
+            "ordered_output": repeat_ordered,
         },
         "repeat_total": {
             "consumed_foundation_positions": repeat_total_consumed,
             "produced_structure": repeat_total_produced,
+            "ordered_output": repeat_total_ordered,
         },
         "row_1": {
             "consumed_foundation_positions": row1_consumed,
             "produced_structure": row1_produced,
+            "ordered_output": row1_ordered,
             "unused_foundation_positions": unused,
             "overdrawn_foundation_positions": overdrawn,
         },
