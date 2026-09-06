@@ -113,6 +113,22 @@ class StructuralExampleTests(unittest.TestCase):
     def test_no_errors(self):
         self.assertEqual(self.result["errors"], [])
 
+    def test_ordered_output_matches_the_row_s_actual_left_to_right_production(self):
+        # setup: SKIP 5 (produces nothing) then DC 1 -> just [DC].
+        # repeat, once: CH 1 (a chain space), SKIP 1 (nothing), DC 1 ->
+        # [chain_space, DC]. Six passes concatenate in order.
+        DC = {"kind": "stitch_post", "stitch": "DC", "source": "literal"}
+        CS = {"kind": "chain_space", "stitch": None, "source": "literal"}
+        self.assertEqual(self.result["setup"]["ordered_output"], [DC])
+        self.assertEqual(self.result["repeat_once"]["ordered_output"], [CS, DC])
+        self.assertEqual(self.result["repeat_total"]["ordered_output"], [CS, DC] * 6)
+        self.assertEqual(self.result["row_1"]["ordered_output"], [DC] + [CS, DC] * 6)
+        # The aggregate produced_structure must always be a summary of
+        # ordered_output, never an independent fact.
+        ordered = self.result["row_1"]["ordered_output"]
+        self.assertEqual(sum(1 for e in ordered if e["kind"] == "stitch_post" and e["stitch"] == "DC"), 7)
+        self.assertEqual(sum(1 for e in ordered if e["kind"] == "chain_space"), 6)
+
 
 # ---------------------------------------------------------------------------
 # 10-13: the known-bad example, caught by exact accounting
@@ -365,6 +381,14 @@ class WorkingLoopPreservesTargetTests(unittest.TestCase):
         self.assertEqual(produced["stitch_posts"], {"DC": 2})
         self.assertEqual(produced["chain_spaces"], 1)
         self.assertEqual(produced["total_workable_positions"], 3)
+
+    def test_ordered_output_is_dc_then_chain_space_then_dc(self):
+        # Order matters here specifically: this is DC, chain space, DC --
+        # not DC, DC, chain space or any other arrangement that would
+        # happen to have the same {"DC": 2, "chain_spaces": 1} totals.
+        DC = {"kind": "stitch_post", "stitch": "DC", "source": "literal"}
+        CS = {"kind": "chain_space", "stitch": None, "source": "literal"}
+        self.assertEqual(self.result["row_1"]["ordered_output"], [DC, CS, DC])
 
     def test_working_loop_alone_does_not_clear_a_target_established_before_it(self):
         # Isolates the mechanism: DC establishes a target, CH working_loop
