@@ -1,0 +1,5 @@
+{
+  "schema_version": "2.0.0",
+  "notes": "The trusted v2 recipe library (Phase 6, engine/recipe_library.py). Every entry in 'recipes' must be a complete, schema-valid v2 recipe (validate_recipe_v2()) -- an entry existing here is NOT itself a claim of physical confirmation; only a recipe whose verification.status is exactly 'CONFIRMED' is trusted (see is_recipe_trusted()). This file is intentionally separate from the older v1 data/confirmed_stitch_patterns.json (a different, flat, unrelated system -- see engine/recipe_library.py's module docstring) and is never read or written by anything outside engine/recipe_library.py. This library is empty because no v2 recipe has actually been physically confirmed yet -- an empty 'recipes' list is a valid, expected state here, not a placeholder to be filled with an invented confirmation.",
+  "recipes": []
+}
