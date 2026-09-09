@@ -120,7 +120,13 @@ step count -- so "DEC 2" (each decrease spanning 2 stitches) correctly
 reads "...in the next 4 stitches", not "...in the next 2 stitches".
 """
 
-from engine.schema import V2_KNOWN_STITCHES, V2_PLACEMENTS
+from engine.schema import (
+    LATER_REPEAT_PLACEMENTS,
+    LATER_SETUP_PLACEMENTS,
+    ROW1_PLACEMENTS,
+    V2_KNOWN_STITCHES,
+    V2_PLACEMENTS,
+)
 from engine.validator import STITCH_RULES
 
 # Every field a plan built by engine/swatch_planner_v2.py's
@@ -265,27 +271,129 @@ def _is_exactly_true(value):
     return value is True
 
 
-def _validate_step(step, path, errors):
+_COUNTS_AS_ALLOWED_FIELDS = frozenset({"stitch_posts", "chain_spaces"})
+
+
+def _validate_counts_as_value(counts_as, path, errors):
+    """
+    Independently-owned copy of the v2 counts_as shape rules (see
+    contracts/stitch_recipe_schema_v2.json and engine/schema.py's own
+    `_validate_counts_as()`) -- not imported from engine/schema.py,
+    since that is a private helper of another module; this module owns
+    its own copy the same way engine/later_row_validator.py owns its
+    own `_target()` rather than importing engine/recipe_validator.py's.
+    This is still input-shape validation of the RENDERER'S OWN ARGUMENT
+    (see _validate_plan()'s docstring), not a re-run of recipe
+    validation -- it happens to check the same rules because a plan's
+    counts_as field is, structurally, the same counts_as object a
+    trusted recipe's own step carried.
+
+    Checks: counts_as is an object; only "stitch_posts" and
+    "chain_spaces" are present; "stitch_posts" is an object whose keys
+    are all known stitch codes (V2_KNOWN_STITCHES) and whose values are
+    all plain non-negative integers (bool explicitly excluded -- True/
+    False are technically ints in Python but never a legitimate count
+    here); "chain_spaces" is itself a plain non-negative integer (bool
+    excluded). Every problem is reported, not just the first. Never
+    raises -- a non-dict counts_as, a non-dict stitch_posts, or any
+    other shape mismatch is reported as an error string, not an
+    AttributeError/TypeError from indexing into the wrong type.
+    """
+    if not isinstance(counts_as, dict):
+        errors.append(f"{path}: must be an object, got {type(counts_as).__name__}")
+        return
+
+    for key in counts_as:
+        if key not in _COUNTS_AS_ALLOWED_FIELDS:
+            errors.append(f"{path}: unexpected field '{key}'")
+
+    if "stitch_posts" not in counts_as:
+        errors.append(f"{path}: missing required field 'stitch_posts'")
+    else:
+        stitch_posts = counts_as["stitch_posts"]
+        if not isinstance(stitch_posts, dict):
+            errors.append(f"{path}.stitch_posts: must be an object, got {type(stitch_posts).__name__}")
+        else:
+            for code, amount in stitch_posts.items():
+                if code not in V2_KNOWN_STITCHES:
+                    errors.append(f"{path}.stitch_posts.{code}: unknown stitch code {code!r}")
+                if not _is_plain_int(amount) or amount < 0:
+                    errors.append(f"{path}.stitch_posts.{code}: must be a non-negative integer, got {amount!r}")
+
+    if "chain_spaces" not in counts_as:
+        errors.append(f"{path}: missing required field 'chain_spaces'")
+    else:
+        chain_spaces = counts_as["chain_spaces"]
+        if not _is_plain_int(chain_spaces) or chain_spaces < 0:
+            errors.append(f"{path}.chain_spaces: must be a non-negative integer, got {chain_spaces!r}")
+
+
+def _validate_step(step, path, allowed_placements, context_label, errors):
+    """
+    Validates one step against a SECTION-SPECIFIC allowed-placement set
+    (one of ROW1_PLACEMENTS / LATER_SETUP_PLACEMENTS /
+    LATER_REPEAT_PLACEMENTS, imported unmodified from engine/schema.py
+    -- the same context-restricted sets validate_recipe_v2() itself
+    enforces, reused rather than re-invented), plus the stitch/placement
+    compatibility rule that applies everywhere (a CH step may only use
+    working_loop or turning_chain; every other stitch must not use
+    either), plus complete counts_as validation.
+
+    This is deliberately context-AWARE, not just "is stitch known and
+    is placement known globally": {"stitch": "CH", "count": 1,
+    "placement": "next_dc"} has a known stitch and a known placement,
+    but next_dc is not in ROW1_PLACEMENTS at all, and CH may never use
+    next_dc regardless of section -- both are reported.
+    {"stitch": "DC", "count": 1, "placement": "turning_chain"} likewise:
+    turning_chain may be contextually legal (later_rows.setup) or not
+    (every other section), but a non-CH stitch must never use it either
+    way -- the stitch/placement compatibility check catches it even in
+    the one section where the placement itself would otherwise be
+    allowed.
+    """
     if not isinstance(step, dict):
         errors.append(f"{path}: step must be an object, got {type(step).__name__}")
         return
+
     stitch = step.get("stitch")
     if stitch not in V2_KNOWN_STITCHES:
         errors.append(f"{path}.stitch: unknown stitch code {stitch!r}")
+
     count = step.get("count")
     if not _is_plain_int(count) or count < 1:
         errors.append(f"{path}.count: must be a positive integer, got {count!r}")
+
     placement = step.get("placement")
     if placement not in V2_PLACEMENTS:
         errors.append(f"{path}.placement: unknown placement {placement!r}")
+    elif placement not in allowed_placements:
+        errors.append(
+            f"{path}.placement: '{placement}' is not valid for {context_label} "
+            f"(allowed here: {sorted(allowed_placements)})"
+        )
+
+    if isinstance(stitch, str) and isinstance(placement, str):
+        if stitch == "CH":
+            if placement not in ("working_loop", "turning_chain"):
+                errors.append(
+                    f"{path}: stitch CH must use placement 'working_loop' or 'turning_chain', got {placement!r}"
+                )
+        elif placement in ("working_loop", "turning_chain"):
+            errors.append(f"{path}: non-CH stitch {stitch!r} must not use placement {placement!r}")
+
+    if "counts_as" in step:
+        counts_as_ok_context = stitch == "CH" and placement == "turning_chain"
+        if not counts_as_ok_context:
+            errors.append(f"{path}.counts_as: only allowed on a CH step whose placement is turning_chain")
+        _validate_counts_as_value(step["counts_as"], f"{path}.counts_as", errors)
 
 
-def _validate_step_list(steps, path, errors):
+def _validate_step_list(steps, path, allowed_placements, context_label, errors):
     if not isinstance(steps, list):
         errors.append(f"{path}: must be a list, got {type(steps).__name__}")
         return
     for i, step in enumerate(steps):
-        _validate_step(step, f"{path}[{i}]", errors)
+        _validate_step(step, f"{path}[{i}]", allowed_placements, context_label, errors)
 
 
 def _validate_later_row_summary(summary, index, errors):
@@ -348,10 +456,25 @@ def _validate_plan(plan):
         "overall_valid" are each present and EXACTLY True -- missing,
         False, or a truthy non-bool (e.g. `1`) are all rejected.
       - row_1_setup, row_1_repeat, later_row_setup, later_row_repeat are
-        each a list of well-formed steps: an object with a known stitch
-        code (V2_KNOWN_STITCHES), a positive integer count, and a known
-        placement (V2_PLACEMENTS) -- an unknown stitch or placement is
-        rejected here rather than reaching _render_step() at all.
+        each a list of well-formed, CONTEXT-VALID steps: an object with
+        a known stitch code (V2_KNOWN_STITCHES), a positive integer
+        count, and a placement that is both a known v2 placement
+        (V2_PLACEMENTS) AND legal specifically in that section
+        (ROW1_PLACEMENTS for both row_1 lists, LATER_SETUP_PLACEMENTS /
+        LATER_REPEAT_PLACEMENTS for the later-row lists -- the exact
+        same context-restricted sets validate_recipe_v2() enforces,
+        reused from engine/schema.py rather than re-invented). A CH step
+        with placement next_dc, or a non-CH step with placement
+        working_loop/turning_chain, is rejected even where the
+        placement value itself would otherwise be contextually legal.
+        counts_as is fully validated wherever present (object shape,
+        allowed only on a CH step whose placement is turning_chain,
+        stitch_posts a dict of known stitch codes to non-negative plain
+        integers, chain_spaces a non-negative plain integer, no
+        unexpected fields) -- never reaching _describe_counts_as() with
+        something that isn't already known-safe to read. None of this
+        reaches _render_step() at all until every step in every list
+        has passed.
       - later_rows is a list of well-formed summaries: a row_number
         integer >= 2, a non-negative integer repeat_execution_count,
         and a "valid" field that is present and EXACTLY True.
@@ -442,14 +565,23 @@ def _validate_plan(plan):
     if "foundation_formula" in plan and not isinstance(plan["foundation_formula"], dict):
         errors.append(f"plan.foundation_formula: must be an object, got {type(plan['foundation_formula']).__name__}")
 
+    # Context-specific placement sets -- the SAME ones
+    # validate_recipe_v2() enforces, reused from engine/schema.py rather
+    # than re-invented: row_1.setup and row_1.repeat share ROW1_PLACEMENTS
+    # (Phase 1 settled row_1 as one placement set covering the whole
+    # row); later_rows.setup and later_rows.repeat each get their own.
     if "row_1_setup" in plan:
-        _validate_step_list(plan["row_1_setup"], "plan.row_1_setup", errors)
+        _validate_step_list(plan["row_1_setup"], "plan.row_1_setup", ROW1_PLACEMENTS, "row_1.setup", errors)
     if "row_1_repeat" in plan:
-        _validate_step_list(plan["row_1_repeat"], "plan.row_1_repeat", errors)
+        _validate_step_list(plan["row_1_repeat"], "plan.row_1_repeat", ROW1_PLACEMENTS, "row_1.repeat", errors)
     if "later_row_setup" in plan:
-        _validate_step_list(plan["later_row_setup"], "plan.later_row_setup", errors)
+        _validate_step_list(
+            plan["later_row_setup"], "plan.later_row_setup", LATER_SETUP_PLACEMENTS, "later_rows.setup", errors
+        )
     if "later_row_repeat" in plan:
-        _validate_step_list(plan["later_row_repeat"], "plan.later_row_repeat", errors)
+        _validate_step_list(
+            plan["later_row_repeat"], "plan.later_row_repeat", LATER_REPEAT_PLACEMENTS, "later_rows.repeat", errors
+        )
 
     if "row_1_repeat_execution_count" in plan and not (
         _is_plain_int(plan["row_1_repeat_execution_count"]) and plan["row_1_repeat_execution_count"] >= 1
