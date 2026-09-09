@@ -1100,12 +1100,38 @@ that it was built that way. `render_swatch_plan()` does not simply
 trust that claim by skipping straight to reading fields, though: it
 checks the WHOLE plan's shape first (a dict; `ready_for_rendering`
 present and exactly `True`; every other required field present; step
-lists whose steps each have a known stitch code and a known placement;
-later-row summaries; repeat counts) — `render_swatch_plan(None)`,
-`render_swatch_plan([])`, `render_swatch_plan({})`, and
-`render_swatch_plan({"terminology": "US"})` all return
-`{"status": "invalid_plan", "text": None, "warnings": [], "errors": [...]}`
-rather than raising.
+lists whose steps each have a known stitch code, a valid `count`, and a
+placement that is both a known v2 placement AND legal in that specific
+section (see NESTED-STEP VALIDATION below); later-row summaries;
+repeat counts) — `render_swatch_plan(None)`, `render_swatch_plan([])`,
+`render_swatch_plan({})`, and `render_swatch_plan({"terminology": "US"})`
+all return `{"status": "invalid_plan", "text": None, "warnings": [],
+"errors": [...]}` rather than raising.
+
+**NESTED-STEP VALIDATION is CONTEXT-AWARE, not just "does the stitch
+and placement each exist somewhere in v2."** `row_1_setup` and
+`row_1_repeat` are checked against `ROW1_PLACEMENTS`; `later_row_setup`
+against `LATER_SETUP_PLACEMENTS`; `later_row_repeat` against
+`LATER_REPEAT_PLACEMENTS` — the exact same context-restricted sets
+`validate_recipe_v2()` itself enforces, imported unmodified from
+`engine/schema.py` rather than re-invented. `{"stitch": "CH", "count":
+1, "placement": "next_dc"}` inside `row_1_repeat` is rejected on two
+independent grounds: `next_dc` isn't in `ROW1_PLACEMENTS` at all, AND a
+CH step may only ever use `working_loop` or `turning_chain`, regardless
+of section. `{"stitch": "DC", "count": 1, "placement": "turning_chain"}`
+is rejected the same way in every section — including
+`later_row_setup`, where `turning_chain` itself is otherwise a legal
+placement value, because a non-CH stitch must never use it. Each step's
+`counts_as` (if present) is fully validated before anything reads it:
+an object (never a string, list, or anything else); allowed only when
+the step is CH with placement `turning_chain`; `stitch_posts` an
+object whose keys are all known stitch codes and whose values are all
+plain non-negative integers (`bool` explicitly excluded, since it's a
+Python `int` subclass but never a legitimate count); `chain_spaces` a
+plain non-negative integer; no field beyond `stitch_posts`/
+`chain_spaces`. A `counts_as` of `"bad"` (a bare string) previously
+reached `_describe_counts_as()` and crashed with `AttributeError`
+instead of being rejected here — see the ninth correction pass below.
 
 Beyond shape, it enforces exactly what "ready" is supposed to mean:
 `trust.provenance` must be exactly `"library"` (never `"ai"` or any
@@ -1516,3 +1542,51 @@ not perform validation itself.
    apparently from an auto-formatter) that was present in the working
    tree but outside this phase's scope — restored to its original
    content via `git checkout -- docs/testing.md`, no content changed.
+
+## Changelog — ninth correction pass (Phase 7 nested-step validation fix)
+
+1. **`_validate_step()` previously checked stitch/placement legality
+   GLOBALLY, not per section.** It confirmed a step's `stitch` was in
+   `V2_KNOWN_STITCHES` and its `placement` was in `V2_PLACEMENTS`
+   somewhere in the v2 vocabulary, but never that the specific
+   combination was legal in the specific list it appeared in.
+   `{"stitch": "CH", "count": 1, "placement": "next_dc"}` inside
+   `row_1_repeat`, and `{"stitch": "DC", "count": 1, "placement":
+   "turning_chain"}` in any section, both passed this check and reached
+   `_render_step()` — which has no defined behavior for either
+   combination and would render something, not refuse. `_validate_step()`
+   now takes the section's specific allowed-placement set
+   (`ROW1_PLACEMENTS` / `LATER_SETUP_PLACEMENTS` / `LATER_REPEAT_PLACEMENTS`,
+   imported from `engine/schema.py`) and reapplies the same
+   stitch/placement compatibility rule `validate_recipe_v2()` already
+   enforces (a CH step may only use `working_loop`/`turning_chain`; any
+   other stitch must not use either) — both checks run independently,
+   so a step can fail on section-legality, stitch/placement
+   compatibility, or both at once, and every applicable error is
+   reported.
+2. **`counts_as` was never validated at all before this pass** — only
+   its presence gated whether `_describe_counts_as()` got called at
+   render time. A `counts_as` of a bare string (`"bad"`) reached
+   `_describe_counts_as()`'s `.get("stitch_posts")` call and crashed
+   with `AttributeError` instead of producing `invalid_plan`. A new
+   `_validate_counts_as_value()` — an independently-owned copy of
+   `engine/schema.py`'s own `_validate_counts_as()` rules (not
+   imported, since that is a private helper of another module; kept in
+   sync by hand with `contracts/stitch_recipe_schema_v2.json`, the same
+   convention `engine/later_row_validator.py` already follows for its
+   own `_target()`) — now checks: `counts_as` is an object; only
+   `stitch_posts`/`chain_spaces` are present; `stitch_posts` is an
+   object of known stitch codes to plain non-negative integers (`bool`
+   excluded); `chain_spaces` is itself a plain non-negative integer.
+   Every problem is reported, never just the first, and nothing raises.
+3. **Both failures were specifically about nested nodes, not the
+   top-level shape the eighth pass already covered** — the eighth
+   pass's `_validate_plan()` correctly rejected a top-level
+   `ready_for_rendering`/`trust`/`validation_evidence` forgery, but had
+   no opinion on what was INSIDE a step or a step's `counts_as`, which
+   is exactly the gap this pass closes. See
+   `tests/test_renderer_v2.py`'s new `NestedStepValidationTests` class
+   for all cases, including a `test_no_malformed_nested_step_raises_an_exception`
+   sweep proving none of them ever reach an uncaught exception, and
+   confirmation that a real `plan_trusted_swatch()` plan (with a valid
+   `counts_as`-bearing turning chain) still renders successfully.
