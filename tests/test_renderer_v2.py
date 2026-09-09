@@ -511,5 +511,265 @@ class ForgedOrInconsistentPlanTests(unittest.TestCase):
         self.assertTrue(any("row_1_valid" in e for e in result["errors"]))
 
 
+# ---------------------------------------------------------------------------
+# Nested step validation: context-aware placement legality and complete
+# counts_as validation. Confirmed failures this class exists to close:
+#   1. counts_as="bad" on a turning_chain step used to crash
+#      _describe_counts_as() with AttributeError instead of returning
+#      invalid_plan.
+#   2. {"stitch": "CH", ..., "placement": "next_dc"} in row_1.repeat, and
+#      {"stitch": "DC", ..., "placement": "turning_chain"} anywhere, used
+#      to render instead of being rejected.
+# ---------------------------------------------------------------------------
+
+def _turning_chain_step(counts_as=None, **overrides):
+    step = {"stitch": "CH", "count": 4, "placement": "turning_chain"}
+    if counts_as is not None:
+        step["counts_as"] = counts_as
+    step.update(overrides)
+    return step
+
+
+class NestedStepValidationTests(unittest.TestCase):
+    def _assert_invalid_plan(self, plan):
+        result = render_swatch_plan(plan)
+        self.assertEqual(result["status"], "invalid_plan")
+        self.assertIsNone(result["text"])
+        self.assertTrue(len(result["errors"]) > 0)
+        return result
+
+    # --- counts_as as the wrong type entirely --------------------------
+
+    def test_counts_as_as_a_string_is_rejected_not_a_crash(self):
+        # The exact confirmed failure: this used to reach
+        # _describe_counts_as() and crash with AttributeError.
+        plan = minimal_plan(later_row_setup=[_turning_chain_step(counts_as="bad")])
+        result = self._assert_invalid_plan(plan)
+        self.assertTrue(any("counts_as: must be an object" in e for e in result["errors"]))
+
+    def test_counts_as_as_a_list_is_rejected(self):
+        plan = minimal_plan(later_row_setup=[_turning_chain_step(counts_as=["DC"])])
+        result = self._assert_invalid_plan(plan)
+        self.assertTrue(any("counts_as: must be an object" in e for e in result["errors"]))
+
+    # --- malformed stitch_posts -----------------------------------------
+
+    def test_malformed_stitch_posts_non_dict_is_rejected(self):
+        plan = minimal_plan(later_row_setup=[
+            _turning_chain_step(counts_as={"stitch_posts": "DC", "chain_spaces": 1})
+        ])
+        result = self._assert_invalid_plan(plan)
+        self.assertTrue(any("stitch_posts: must be an object" in e for e in result["errors"]))
+
+    def test_unknown_stitch_code_inside_stitch_posts_is_rejected(self):
+        plan = minimal_plan(later_row_setup=[
+            _turning_chain_step(counts_as={"stitch_posts": {"TRC": 1}, "chain_spaces": 1})
+        ])
+        result = self._assert_invalid_plan(plan)
+        self.assertTrue(any("stitch_posts.TRC: unknown stitch code" in e for e in result["errors"]))
+
+    def test_negative_stitch_post_amount_is_rejected(self):
+        plan = minimal_plan(later_row_setup=[
+            _turning_chain_step(counts_as={"stitch_posts": {"DC": -1}, "chain_spaces": 1})
+        ])
+        result = self._assert_invalid_plan(plan)
+        self.assertTrue(any("stitch_posts.DC: must be a non-negative integer" in e for e in result["errors"]))
+
+    def test_float_stitch_post_amount_is_rejected(self):
+        plan = minimal_plan(later_row_setup=[
+            _turning_chain_step(counts_as={"stitch_posts": {"DC": 1.5}, "chain_spaces": 1})
+        ])
+        result = self._assert_invalid_plan(plan)
+        self.assertTrue(any("stitch_posts.DC: must be a non-negative integer" in e for e in result["errors"]))
+
+    def test_string_stitch_post_amount_is_rejected(self):
+        plan = minimal_plan(later_row_setup=[
+            _turning_chain_step(counts_as={"stitch_posts": {"DC": "one"}, "chain_spaces": 1})
+        ])
+        result = self._assert_invalid_plan(plan)
+        self.assertTrue(any("stitch_posts.DC: must be a non-negative integer" in e for e in result["errors"]))
+
+    def test_boolean_stitch_post_amount_is_rejected(self):
+        # bool is a Python int subclass -- must still be excluded.
+        plan = minimal_plan(later_row_setup=[
+            _turning_chain_step(counts_as={"stitch_posts": {"DC": True}, "chain_spaces": 1})
+        ])
+        result = self._assert_invalid_plan(plan)
+        self.assertTrue(any("stitch_posts.DC: must be a non-negative integer" in e for e in result["errors"]))
+
+    # --- malformed chain_spaces ------------------------------------------
+
+    def test_malformed_chain_spaces_negative_is_rejected(self):
+        plan = minimal_plan(later_row_setup=[
+            _turning_chain_step(counts_as={"stitch_posts": {"DC": 1}, "chain_spaces": -1})
+        ])
+        result = self._assert_invalid_plan(plan)
+        self.assertTrue(any("chain_spaces: must be a non-negative integer" in e for e in result["errors"]))
+
+    def test_malformed_chain_spaces_string_is_rejected(self):
+        plan = minimal_plan(later_row_setup=[
+            _turning_chain_step(counts_as={"stitch_posts": {"DC": 1}, "chain_spaces": "one"})
+        ])
+        result = self._assert_invalid_plan(plan)
+        self.assertTrue(any("chain_spaces: must be a non-negative integer" in e for e in result["errors"]))
+
+    def test_malformed_chain_spaces_boolean_is_rejected(self):
+        plan = minimal_plan(later_row_setup=[
+            _turning_chain_step(counts_as={"stitch_posts": {"DC": 1}, "chain_spaces": True})
+        ])
+        result = self._assert_invalid_plan(plan)
+        self.assertTrue(any("chain_spaces: must be a non-negative integer" in e for e in result["errors"]))
+
+    def test_missing_chain_spaces_is_rejected(self):
+        plan = minimal_plan(later_row_setup=[
+            _turning_chain_step(counts_as={"stitch_posts": {"DC": 1}})
+        ])
+        result = self._assert_invalid_plan(plan)
+        self.assertTrue(any("missing required field 'chain_spaces'" in e for e in result["errors"]))
+
+    # --- unexpected counts_as fields -------------------------------------
+
+    def test_unexpected_counts_as_field_is_rejected(self):
+        plan = minimal_plan(later_row_setup=[
+            _turning_chain_step(counts_as={"stitch_posts": {"DC": 1}, "chain_spaces": 1, "extra": True})
+        ])
+        result = self._assert_invalid_plan(plan)
+        self.assertTrue(any("unexpected field 'extra'" in e for e in result["errors"]))
+
+    # --- counts_as in a forbidden section ---------------------------------
+
+    def test_counts_as_in_a_forbidden_section_is_rejected(self):
+        # counts_as is only ever legal on a CH step whose placement is
+        # turning_chain -- a working_loop CH step (legal in every
+        # section) carrying counts_as must still be rejected.
+        plan = minimal_plan(row_1_repeat=[
+            {"stitch": "CH", "count": 1, "placement": "working_loop",
+             "counts_as": {"stitch_posts": {"DC": 1}, "chain_spaces": 1}}
+        ])
+        result = self._assert_invalid_plan(plan)
+        self.assertTrue(
+            any("counts_as: only allowed on a CH step whose placement is turning_chain" in e for e in result["errors"])
+        )
+
+    # --- illegal stitch/placement combinations, context-aware -----------
+
+    def test_ch_with_next_dc_in_row_1_repeat_is_rejected(self):
+        # Confirmed failure #2: this used to render.
+        plan = minimal_plan(row_1_repeat=[{"stitch": "CH", "count": 1, "placement": "next_dc"}])
+        result = self._assert_invalid_plan(plan)
+        self.assertTrue(any("not valid for row_1.repeat" in e for e in result["errors"]))
+        self.assertTrue(any("stitch CH must use placement" in e for e in result["errors"]))
+
+    def test_dc_with_turning_chain_in_row_1_setup_is_rejected(self):
+        plan = minimal_plan(row_1_setup=[{"stitch": "DC", "count": 1, "placement": "turning_chain"}])
+        result = self._assert_invalid_plan(plan)
+        self.assertTrue(any("non-CH stitch 'DC' must not use placement 'turning_chain'" in e for e in result["errors"]))
+
+    def test_dc_with_turning_chain_in_later_row_repeat_is_rejected(self):
+        plan = minimal_plan(later_row_repeat=[{"stitch": "DC", "count": 1, "placement": "turning_chain"}])
+        result = self._assert_invalid_plan(plan)
+        self.assertTrue(any("not valid for later_rows.repeat" in e for e in result["errors"]))
+        self.assertTrue(any("non-CH stitch 'DC' must not use placement 'turning_chain'" in e for e in result["errors"]))
+
+    def test_placement_legal_globally_but_illegal_in_row_1_is_rejected(self):
+        # next_chain_space is a real v2 placement, but it is not in
+        # ROW1_PLACEMENTS at all.
+        plan = minimal_plan(row_1_repeat=[{"stitch": "SC", "count": 1, "placement": "next_chain_space"}])
+        result = self._assert_invalid_plan(plan)
+        self.assertTrue(any("not valid for row_1.repeat" in e for e in result["errors"]))
+
+    def test_placement_legal_globally_but_illegal_in_later_row_repeat_is_rejected(self):
+        # turning_chain is a real v2 placement, legal in later_rows.setup,
+        # but not in later_rows.repeat.
+        plan = minimal_plan(later_row_repeat=[{"stitch": "CH", "count": 1, "placement": "turning_chain"}])
+        result = self._assert_invalid_plan(plan)
+        self.assertTrue(any("not valid for later_rows.repeat" in e for e in result["errors"]))
+
+    def test_placement_legal_in_row_1_but_illegal_in_later_row_setup_is_rejected(self):
+        # next_foundation_chain is row-1-only.
+        plan = minimal_plan(later_row_setup=[{"stitch": "SC", "count": 1, "placement": "next_foundation_chain"}])
+        result = self._assert_invalid_plan(plan)
+        self.assertTrue(any("not valid for later_rows.setup" in e for e in result["errors"]))
+
+    # --- no malformed nested step ever raises ----------------------------
+
+    def test_no_malformed_nested_step_raises_an_exception(self):
+        malformed_variants = [
+            [_turning_chain_step(counts_as="bad")],
+            [_turning_chain_step(counts_as=["DC"])],
+            [_turning_chain_step(counts_as={"stitch_posts": "DC", "chain_spaces": 1})],
+            [_turning_chain_step(counts_as={"stitch_posts": {"TRC": 1}, "chain_spaces": 1})],
+            [_turning_chain_step(counts_as={"stitch_posts": {"DC": -1}, "chain_spaces": 1})],
+            [_turning_chain_step(counts_as={"stitch_posts": {"DC": 1}, "chain_spaces": "one"})],
+            [{"stitch": "CH", "count": 1, "placement": "next_dc"}],
+            [{"stitch": "DC", "count": 1, "placement": "turning_chain"}],
+            [{"stitch": "DC", "count": 1, "placement": "turning_chain",
+              "counts_as": {"stitch_posts": {"DC": 1}, "chain_spaces": 1}}],
+            "not a list",
+            [None],
+            [{"stitch": None, "count": None, "placement": None}],
+        ]
+        for variant in malformed_variants:
+            with self.subTest(variant=variant):
+                plan = minimal_plan(later_row_setup=variant)
+                try:
+                    result = render_swatch_plan(plan)
+                except Exception as e:  # noqa: BLE001 -- explicitly proving NOTHING raises here
+                    self.fail(f"render_swatch_plan() raised {e!r} for {variant!r} instead of returning a result")
+                self.assertEqual(result["status"], "invalid_plan")
+                self.assertIsNone(result["text"])
+
+    # --- the positive cases: valid counts_as and a real plan still work -
+
+    def test_valid_turning_chain_counts_as_still_renders_correctly(self):
+        plan = minimal_plan(later_row_setup=[
+            _turning_chain_step(counts_as={"stitch_posts": {"DC": 1}, "chain_spaces": 1})
+        ])
+        result = render_swatch_plan(plan)
+        self.assertEqual(result["status"], "rendered")
+        # Capitalized: this is the first phrase of Row 2's setup text.
+        self.assertIn("Turn and chain 4", result["text"])
+        self.assertIn("counts as 1 double crochet", result["text"])
+        self.assertIn("forms 1 chain space", result["text"])
+
+    def test_real_plan_from_plan_trusted_swatch_still_renders(self):
+        from engine.swatch_planner_v2 import plan_trusted_swatch
+
+        def recipe(pattern_id, name, status="AI_PROPOSED", repeat_multiple=1):
+            verification = {"status": status, "confirmations": []}
+            if status == "CONFIRMED":
+                verification["confirmations"] = [{"photo": "a.jpg", "date": "2026-01-01", "note": "hand swatched"}]
+            return {
+                "pattern_id": pattern_id, "name": name, "aliases": [], "terminology": "US",
+                "foundation_formula": {"repeat_multiple": repeat_multiple, "additional_chains": 0},
+                "row_1": {"setup": [], "repeat": [{"stitch": "DC", "count": 1, "placement": "next_foundation_chain"}]},
+                "later_rows": {
+                    "setup": [{"stitch": "CH", "count": 4, "placement": "turning_chain",
+                               "counts_as": {"stitch_posts": {"DC": 1}, "chain_spaces": 1}}],
+                    "repeat": [{"stitch": "DC", "count": 1, "placement": "next_dc"}],
+                },
+                "expected_swatch_structure": {"expected_stitch_posts_per_repeat": None, "expected_chain_spaces_per_repeat": None},
+                "verification": verification,
+            }
+
+        trusted = recipe("filet_mesh_v1", "Filet Mesh", status="CONFIRMED")
+        library = {"schema_version": "2.0.0", "recipes": [trusted]}
+        ai_proposal = recipe("ai_guess", "filet mesh", status="AI_PROPOSED")
+
+        # later_row_count=1 (not 2): with a counts_as-bearing turning
+        # chain, a third row's next_dc would need to resolve a DC that
+        # exists only via row 2's own counts_as credit -- Phase 5's
+        # documented, deliberate "refuses to guess" case (see
+        # engine/later_row_validator.py). That is a separate, already
+        # -covered concern; this test is only proving the renderer's
+        # nested-step validation doesn't block a real, valid plan.
+        result = plan_trusted_swatch(ai_proposal, requested_repeat_count=4, later_row_count=1, library=library)
+
+        self.assertEqual(result["status"], "ready")
+        self.assertTrue(result["ready_for_user_instructions"])
+        self.assertIsInstance(result["rendered_instructions"], str)
+        self.assertIn("Filet Mesh", result["rendered_instructions"])
+
+
 if __name__ == "__main__":
     unittest.main()
