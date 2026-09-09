@@ -1,4 +1,4 @@
-# StitchScope Recipe Model v2 — Design (Phase 1), now with schema enforcement (Phase 2), a foundation calculator (Phase 3), row-1 math validation (Phase 4A), and typed later-row validation (Phase 5)
+# StitchScope Recipe Model v2 — Design (Phase 1), now with schema enforcement (Phase 2), a foundation calculator (Phase 3), row-1 math validation (Phase 4A), typed later-row validation (Phase 5), a trusted recipe library (Phase 6), and a trusted swatch planner/renderer (Phase 7)
 
 **Status: still not wired into the production photo pathway.**
 `engine/vision.py`, `engine/swatch.py` (its own, different v1 foundation
@@ -15,10 +15,19 @@ see "Phase 4A: row-1 math validation" for what it checks and why
 later-row validation isn't part of it. Phase 5 added
 `engine/later_row_validator.py`'s `validate_recipe_rows()` — see "Phase
 5: typed later-row validation" for how it resolves (or explicitly
-refuses to resolve) the open questions Phase 4A left for it. The rest
-of this document (sections 1–11) is the original Phase 1 design
-discussion, left as written; only this status note and the Phase
-3/4A/5 sections are new.
+refuses to resolve) the open questions Phase 4A left for it. Phase 6
+added `engine/recipe_library.py` and `data/confirmed_stitch_recipes_v2.json`
+— see "Phase 6: trusted recipe library and recipe resolution" for how a
+physically-confirmed recipe is stored, looked up, and made to override
+a fresh (untrusted) AI proposal for the same stitch. Phase 7 added
+`engine/swatch_planner_v2.py` and `engine/renderer_v2.py` — see "Phase
+7: trusted swatch planner and user-facing renderer" for how a
+`trusted_match` recipe is turned into a fully simulated, evidence
+-backed swatch plan and rendered into plain instructions, and for every
+explicit way that pipeline refuses instead. The rest of this document
+(sections 1–11) is the original Phase 1 design discussion, left as
+written; only this status note and the Phase 3/4A/5/6/7 sections are
+new.
 
 *This is the corrected revision of the Phase 1 design. See the changelog
 at the bottom for what that correction pass fixed and why.*
@@ -774,6 +783,401 @@ the missing schema field above) — see
 and `AmbiguousRepeatCountTests` for concrete, hand-checkable examples of
 both.
 
+## Phase 6: trusted recipe library and recipe resolution
+
+`engine/recipe_library.py` stores validated v2 recipes and safely
+resolves an AI-proposed stitch (a name/aliases claim plus untrusted
+instructions) against them. **This library is generic** — every
+function operates on the v2 shape and a name/alias lookup any stitch
+family can use; nothing about filet mesh, or any other specific stitch,
+is hard-coded into it. The structural and known-bad examples in
+`contracts/examples/` remain illustrative fixtures, never entries this
+module trusts by name.
+
+### Why mathematical validity is not physical confirmation
+
+Schema validity, foundation math, Phase 4A's row-1 check, and Phase 5's
+later-row check are all still purely computer-checkable layers (section
+6) — none of them involve a human or a physical object. A recipe can
+pass every one of them and still describe the wrong stitch, or the
+right stitch worked the wrong way. `engine/recipe_library.py` never
+promotes a recipe's `verification.status`; it only ever *reads* it.
+Nothing in this module runs `calculate_foundation()`,
+`validate_row_1_against_foundation()`, or `validate_recipe_rows()` at
+all — attaching that evidence is left to whatever calls this module
+(Phase 7), once there's an actual `requested_repeat_count`/
+`later_row_count` to run those validators against; duplicating that
+logic here, or guessing those numbers, is exactly the kind of invention
+this project has consistently refused to do at each prior phase.
+
+### How recipes enter the library
+
+`data/confirmed_stitch_recipes_v2.json` is a **new, separate** file —
+`{"schema_version": "2.0.0", "recipes": [...], "notes": "..." (optional)}`
+— never the older, flat `data/confirmed_stitch_patterns.json` (see the
+comparison below). `load_recipe_library()` reads it, parses it, and
+validates it as a whole via `validate_recipe_library()`:
+
+- the top level accepts only `schema_version`, `recipes`, and the
+  optional `notes` — any other top-level field is rejected outright,
+  the same closed-shape discipline
+  `contracts/stitch_recipe_schema_v2.json` already applies to every
+  object inside a v2 recipe (`additionalProperties: false`);
+- `schema_version` is required, must be a string, and must equal
+  exactly `"2.0.0"` (`LIBRARY_SCHEMA_VERSION`) — a missing, non-string,
+  or different value is rejected; this module never guesses how to
+  read a library format it wasn't written for;
+- `notes`, if present, must be a non-empty string;
+- `recipes` is required and must be a list, and every entry must
+  independently pass `validate_recipe_v2()`, with no two entries
+  sharing a `pattern_id` and no two entries' normalized name/alias sets
+  overlapping.
+
+Any failure — bad JSON, an unexpected top-level field, a missing or
+unsupported `schema_version`, one malformed recipe among many, a
+duplicate `pattern_id`, an ambiguous shared alias — raises
+`RecipeLibraryError` naming exactly what's wrong; nothing is silently
+dropped or skipped to make the rest of the file "still work." **An
+empty `recipes` list is a valid, ordinary result**, distinct from a
+library that fails to load at all — the production file ships empty
+because no v2 recipe has actually been physically confirmed yet; that
+is the honest state, not a placeholder to be filled with an invented
+confirmation.
+
+### Trust boundary: a directly-supplied library is validated too
+
+`find_recipe_by_pattern_id()`, `find_recipe_by_name()`, and
+`resolve_stitch_recipe()` all accept a `library` argument directly, not
+only the real file `load_recipe_library()` reads. A library passed in
+this way is **not** assumed to have already gone through
+`validate_recipe_library()` — a hand-built or externally-supplied dict
+could otherwise claim `verification.status == "CONFIRMED"` on a recipe
+that never actually passed `validate_recipe_v2()`, or hide a duplicate
+`pattern_id` behind a "first match wins" lookup, and be selected as
+trusted output without ever being checked.
+
+Every one of those three functions therefore runs the supplied library
+through `validate_recipe_library()` (via the shared internal
+`_load_or_validate_library()` gate) **before** doing anything else with
+it, and raises `RecipeLibraryError` — the exact same exception,
+constructed the exact same way, `load_recipe_library()` raises for a
+broken file — if it fails. This is unconditional: there is no code path
+in this module that reaches `is_recipe_trusted()`, a name/alias match,
+or `selected_recipe` using a library that hasn't passed validation.
+`resolve_stitch_recipe()` validates its library exactly once per call
+(not once per lookup term, via private `_find_recipe_by_pattern_id_in()`/
+`_find_recipe_by_name_in()` helpers that assume an already-validated
+library); `find_recipe_by_pattern_id()` and `find_recipe_by_name()`
+remain the safe, independently-validating **public** entry points for
+any other caller — they are not downgraded to "unsafe" helpers, since
+they are documented public library operations.
+
+### Name and alias normalization
+
+`normalize_stitch_name()` is the one normalization function every
+lookup in this module uses: trim, casefold, collapse every run of
+hyphens/underscores to a single space, collapse every run of remaining
+whitespace to a single space, trim again. `"Filet Mesh"`, `"filet
+mesh"`, `" FILET   MESH "`, `"filet-mesh"`, and `"filet_mesh"` all
+normalize to `"filet mesh"`. This is exact string normalization only —
+never fuzzy matching, stemming, or plural handling, and it never
+decides that "mesh," "open mesh," and "filet mesh" are the same stitch
+on its own; two terms only resolve to the same recipe when that
+recipe's own `name`/`aliases` explicitly declares both.
+
+### Trusted versus untrusted lookup
+
+`is_recipe_trusted(recipe)` is `True` only when `verification.status`
+is exactly `"CONFIRMED"` — the one status in the existing 7-value v2
+vocabulary (section 7) meaning a person physically crocheted the exact
+candidate **and** a human verified the result matches the intended
+stitch. Every other status, deliberately including `SWATCH_TESTED`
+(a physical attempt happened, but section 7 is explicit that this
+doesn't mean it matched — "whether the attempt succeeded or failed"),
+returns `False`. The library can still load and hold `AI_PROPOSED`,
+`STRUCTURE_VALID`, `MATH_VALID`, `SIMULATION_VALID`, `SWATCH_TESTED`,
+and `REJECTED` entries for review, comparison, or future confirmation —
+`load_recipe_library()` doesn't filter by status at all — but
+`resolve_stitch_recipe()`'s `trusted` field and `selected_recipe`
+always distinguish them clearly from a `CONFIRMED` one.
+
+### How AI proposals are resolved
+
+`resolve_stitch_recipe(ai_proposal, library=None)`:
+
+1. Validates `ai_proposal` with `validate_recipe_v2()`. A structurally
+   invalid proposal short-circuits as `invalid_ai_proposal` immediately
+   — nothing is looked up, since its `pattern_id`/`name`/`aliases`
+   can't be trusted to mean what they claim.
+2. Searches the library deterministically: `pattern_id` first (via
+   `find_recipe_by_pattern_id()`), then `name`, then every declared
+   alias (each via `find_recipe_by_name()`), recording every attempted
+   term in `lookup_terms` regardless of outcome.
+3. Every recipe any of those terms matched is collected (deduplicated
+   by `pattern_id`). Zero matches → `no_match`. More than one distinct
+   recipe matched → `ambiguous_match`, naming every conflicting
+   `pattern_id` — this function never guesses which one the AI "must
+   have meant" (`find_recipe_by_name()` itself returns every match it
+   finds, never just the first, for exactly this reason).
+4. Exactly one matched recipe → `trusted_match` if
+   `is_recipe_trusted()` is `True` for it, otherwise `untrusted_match`.
+
+### Why trusted recipes override AI instructions
+
+For `trusted_match`, `selected_recipe` is set to the **library**
+recipe unconditionally — never the AI's own instructions, even when
+`compare_recipe_proposal()` finds they agree exactly. The library
+recipe overrides by construction (it is the one recipe with actual
+physical confirmation behind it), not by comparison outcome; the AI
+proposal is preserved unmodified in the result's `ai_proposal` field
+purely for comparison and diagnostics. `ai_proposal_usable_for_user_
+instructions` is always `False` — Phase 6 has no mechanism by which a
+fresh AI proposal itself becomes trusted output, stated outright rather
+than left for a caller to infer.
+
+### What happens when no trusted recipe exists
+
+`no_match`: `selected_recipe` and `provenance` both stay `None`; the AI
+proposal is returned as unverified candidate data only, never marked
+physically confirmed, and no final user-facing instructions are
+generated from it here. `untrusted_match` behaves the same way for
+`selected_recipe`/`provenance` — a library entry existing under that
+name is not itself permission to use it as trusted output; only
+`is_recipe_trusted()` being `True` is. `ambiguous_match` also leaves
+`selected_recipe` `None`, listing every conflicting `pattern_id` in
+`conflicting_pattern_ids` instead of picking one.
+
+### Structural comparison
+
+`compare_recipe_proposal(ai_recipe, library_recipe)` reports agreement
+and disagreement only — it never decides which recipe (if either) is
+physically correct. It compares `pattern_id`; normalized name and
+alias sets; `foundation_formula.repeat_multiple` and
+`.additional_chains`; `row_1.setup`, `row_1.repeat`,
+`later_rows.setup`, and `later_rows.repeat` **index by index** (a
+length mismatch is reported in addition to, not instead of, comparing
+every index the two lists share, so a reordering is never hidden
+behind matching totals); each step's `stitch`/`count`/`placement`/
+`counts_as`; and both `expected_swatch_structure` fields. Every
+difference names its exact path — `foundation_formula.repeat_multiple`,
+`row_1.repeat[1].placement`, `later_rows.setup[0].counts_as` — never
+just "these differ somewhere."
+
+### v1 vs. v2 confirmed-pattern systems (unrelated, not migrated)
+
+`engine/confirmed_patterns.py` and `data/confirmed_stitch_patterns.json`
+are a different, older system this phase does not touch, extend, or
+migrate. v1 keys a flat dict by one normalized "stitch family" string
+and stores three bare step lists (`setup`/`repeat`/`turning_chain`)
+with no `placement`, no `counts_as`, no `pattern_id`/`aliases`, and a
+binary confirmed-or-not distinction. v2 (this module) stores complete
+schema-valid recipe objects — with `placement`, `counts_as`, a
+foundation formula, `row_1` vs. `later_rows`, and the graduated 7-value
+`verification.status` — in a list, looked up by `pattern_id` or by
+normalized name/alias, with an explicit trust predicate rather than a
+bare non-empty check. `data/confirmed_stitch_patterns.json`'s two
+existing entries (`"filet mesh"`, `"single crochet"`) both have empty
+`confirmations` lists — neither is actually confirmed there either, so
+there is nothing to migrate even in spirit. This phase reads and writes
+only `data/confirmed_stitch_recipes_v2.json`.
+
+### What remains for Phase 7
+
+`resolve_stitch_recipe()` decides WHICH recipe (library or AI) should
+be used; it never runs the math/simulation validators against it.
+Attaching that evidence (`calculate_foundation()`,
+`validate_row_1_against_foundation()`, `validate_recipe_rows()`) once a
+caller has an actual repeat count to test against, generating real
+swatch/pattern output from `selected_recipe`, and the confirmation
+workflow that would ever move a stored recipe to `CONFIRMED` in the
+first place, are all Phase 7 (and later) work, not covered here.
+
+## Phase 7: trusted swatch planner and user-facing renderer
+
+`engine/swatch_planner_v2.py`'s **`plan_trusted_swatch(ai_proposal,
+requested_repeat_count, later_row_count, library=None)`** connects
+Phase 6's resolution and Phase 5's full row simulation into one
+pipeline: it either returns a complete, evidence-backed swatch plan
+with rendered instructions, or refuses clearly and explicitly — never a
+half-finished result someone could mistake for a usable pattern. This
+phase begins with an already-structured AI proposal (the same v2
+recipe shape Phase 6 already validates); it does not receive or
+analyze an image.
+
+### The pipeline
+
+```
+AI recipe proposal
+    ↓
+Phase 6 recipe resolution (resolve_stitch_recipe())
+    ↓
+require status == trusted_match; use ONLY selected_recipe
+    ↓
+Phase 5 full row simulation (validate_recipe_rows(), on selected_recipe)
+    ↓
+require valid simulation
+    ↓
+build swatch plan (from selected_recipe + the validators' own results)
+    ↓
+render instructions (engine/renderer_v2.py, a separate module)
+```
+
+Every field of the eventual plan comes from `resolution["selected_recipe"]`
+(the LIBRARY recipe) and the validators' own results — never from
+`ai_proposal`. If resolution is anything other than `trusted_match`,
+the pipeline stops there; it never falls back to rendering the AI's own
+proposal as if it were trustworthy output, even when the AI's numbers
+happen to look plausible.
+
+### Explicit outcomes, never collapsed into one generic error
+
+`plan_trusted_swatch()` returns one of: `ready`, `no_trusted_recipe`,
+`ambiguous_recipe`, `invalid_ai_proposal`, `invalid_library`,
+`simulation_failed`, `simulation_unsupported`, `invalid_request`, or
+`render_unsupported` (added because Phase 6/5's outcome vocabulary had
+no name for "everything passed except the trusted recipe's own
+terminology isn't one the renderer implements" — see PART 6 below).
+`resolve_stitch_recipe()`'s `untrusted_match` and `no_match` both
+collapse to `no_trusted_recipe` at this layer — a library entry
+existing under the identified name is not itself permission to use it;
+only `trusted_match` is — but the full `resolution` dict (including
+`matched_recipe` and its comparison against the AI proposal) is still
+returned for diagnostics either way. For every non-`ready` outcome,
+`ready_for_user_instructions` is `False` and `rendered_instructions` is
+`None`, unconditionally.
+
+`RecipeLibraryError` (an invalid library, default or directly supplied)
+and `RecipeMathError` (one of Phase 4A/5's "refuses to guess" semantic
+cases, e.g. a `same_stitch` with no established target) are both caught
+here and turned into `invalid_library`/`simulation_unsupported`
+results respectively — never an uncaught traceback for an expected
+failure mode. An ordinary math mismatch `validate_recipe_rows()`
+reports as `valid: False` (rather than raising) becomes
+`simulation_failed`, carrying the full row-validation report so a
+caller can see exactly which row failed.
+
+### The structured swatch plan
+
+Built only from `selected_recipe` and the validators' own results,
+never from `ai_proposal` — every step list embedded in it
+(`row_1_setup`, `row_1_repeat`, `later_row_setup`, `later_row_repeat`)
+is a deep copy of the trusted recipe's own data, so mutating a returned
+plan can never reach back into the library recipe it came from. It
+records `pattern_id`, display `name`, `terminology`, trust/provenance,
+`requested_repeat_count`, `total_rows`, the foundation chain count and
+full formula breakdown, row 1's setup/repeat steps and its repeat
+execution count (`requested_repeat_count` itself — row 1's repeat count
+is always the caller's explicit choice, never derived), each later
+row's own setup/repeat steps and its *actual derived*
+`repeat_execution_count` (from Phase 5's cursor walk, never assumed
+equal to `requested_repeat_count`), summarized validation evidence, and
+warnings. **It never claims a physical measurement** ("four inches" or
+otherwise) — a warning states this explicitly on every ready plan;
+relating repeat count to gauge/physical width is not implemented at
+this phase.
+
+### The renderer does exactly one job
+
+`engine/renderer_v2.py`'s **`render_swatch_plan(plan)`** accepts only
+an already-built structured plan and translates it into words. It does
+not resolve recipes, perform validation, calculate foundation math,
+read the library, or decide trust — those are Phases 4A/5/6's jobs,
+already done by the time a plan exists at all. This mirrors why
+`engine/renderer.py` (v1) is untouched and unrelated: v1 renders a
+flat, placement-less step shape with no `placement`/`counts_as`
+concept to translate, so its wording (e.g. "double crochet in the next
+stitch" unconditionally) is insufficient for v2, where the same `DC`
+step might be worked `next_foundation_chain`, `same_stitch`, `next_dc`,
+or `next_chain_space` — each needing different, precise wording.
+
+**`render_swatch_plan()` validates its own argument before reading a
+single field from it — and that validation enforces the INTERNAL
+READINESS CONTRACT strongly, not merely "does it have the right keys."**
+`plan_trusted_swatch()`'s `_build_swatch_plan()` only ever runs after
+resolution and simulation have both succeeded, and every plan it
+returns now carries `"ready_for_rendering": True` — a plan's own claim
+that it was built that way. `render_swatch_plan()` does not simply
+trust that claim by skipping straight to reading fields, though: it
+checks the WHOLE plan's shape first (a dict; `ready_for_rendering`
+present and exactly `True`; every other required field present; step
+lists whose steps each have a known stitch code and a known placement;
+later-row summaries; repeat counts) — `render_swatch_plan(None)`,
+`render_swatch_plan([])`, `render_swatch_plan({})`, and
+`render_swatch_plan({"terminology": "US"})` all return
+`{"status": "invalid_plan", "text": None, "warnings": [], "errors": [...]}`
+rather than raising.
+
+Beyond shape, it enforces exactly what "ready" is supposed to mean:
+`trust.provenance` must be exactly `"library"` (never `"ai"` or any
+other value) AND `trust.verification_status` must be exactly
+`"CONFIRMED"` — both, not either; `validation_evidence`'s
+`row_1_valid`, `later_rows_valid`, and `overall_valid` must each be
+present and exactly `True` (missing, `False`, or a truthy non-bool like
+`1` are all rejected); every later-row summary's own `"valid"` must
+likewise be exactly `True`. A handful of CROSS-FIELD consistency checks
+also run — `total_rows == 1 + len(later_rows)`, row 1's repeat
+execution count agreeing with `requested_repeat_count`, later-row
+numbers being consecutive starting at 2, and `foundation_chain_count`
+agreeing with `foundation_formula`'s own `foundation_count` — comparing
+the plan's own fields against each other, catching a forged or
+hand-edited plan whose individual fields each look fine in isolation
+but don't add up together. A plan forging `{"trust": {"provenance":
+"ai"}}` or an empty `"validation_evidence": {}` is rejected exactly
+like a plan missing a required field is.
+
+This is all validation of the RENDERER'S OWN ARGUMENT — confirming what
+it was handed is safe to read and internally self-consistent — not a
+re-check of recipe/foundation/row correctness, which was already
+decided, successfully, before a plan could exist at all.
+`_validate_plan()` never reruns recipe resolution or mathematical
+simulation to reach these conclusions; it only compares fields the plan
+already carries against each other. A plan that passes this check but
+names an unimplemented terminology still returns the existing
+`"unsupported_terminology"` result, not `"invalid_plan"` — the plan
+itself is fine; only the terminology isn't supported yet.
+
+**Stitch terminology** lives in one dict,
+`_STITCH_NAMES_BY_TERMINOLOGY`, keyed by the schema's own `terminology`
+values. Only `"US"` is implemented (`CH`→chain, `SC`→single crochet,
+`HDC`→half double crochet, `DC`→double crochet, `SLST`→slip stitch,
+`SKIP`→skip, `INC`→increase, `DEC`→decrease); counts render naturally
+("DC 1" → "make 1 double crochet", "DC 3" → "make 3 double crochets").
+Schema v2 also allows `"UK"`, which is **not yet implemented** — a
+`"UK"` plan returns `{"status": "unsupported_terminology", "text":
+None, ...}` rather than silently rendering US wording under a UK label;
+`plan_trusted_swatch()` surfaces this as its own `render_unsupported`
+outcome (see above), never a false `ready`.
+
+**Placement language** translates every placement into wording a
+crocheter recognizes, never an internal implementation term
+(`target_established`, `ordered_output`, `cursor`, `produced_structure`,
+"counts_as pool"): `next_foundation_chain` → "in the next foundation
+chain"; `working_loop` (always `CH`) → "chain N"; `next_stitch` → "in
+the next stitch"; `next_dc` → "in the next double crochet";
+`next_chain_space` → "in the next chain space"; `turning_chain` (always
+`CH`, always opens a later row) → "turn and chain N", with a short
+plain-language note appended when `counts_as` is present (e.g. "(counts
+as 1 double crochet; forms 1 chain space)"). Every one of these
+pluralizes by the number of foundation/stitch/chain-space POSITIONS a
+step actually touches (`STITCH_RULES[stitch]["consumes"] * count`,
+reused read-only purely for correct English plurals — not validation or
+math), not the raw step count, so `DEC 2` (each decrease spanning 2
+stitches) correctly reads "...in the next 4 stitches."
+
+**`same_stitch` always renders as "in the same stitch or space,"
+never a guess between the two.** PART 7 of this phase's task allowed
+the more precise "in the same stitch" / "in the same chain space"
+wording *if* the plan retains evidence of which kind was actually
+targeted — but neither `validate_row_1_against_foundation()`'s nor
+`validate_recipe_rows()`'s returned report records the KIND of the most
+recently established target anywhere, only whether one exists (a plain
+`target_established`-style boolean, or its ordered-cursor equivalent).
+A structured plan built from those reports therefore has no safe way to
+distinguish the two, so the renderer always uses the generic phrase.
+Making the more precise wording possible would mean changing what
+Phase 4A/5 track — out of scope for a renderer-only module that must
+not perform validation itself.
+
 ## Changelog — first correction pass
 
 1. **Separated computer simulation from physical swatch testing.**
@@ -990,3 +1394,125 @@ both.
    turn itself (`OrderedOutputThreadingTests`) and for proving the
    reversal never mutates an already-returned report's stored lists
    (`NoMutationTests.test_turning_a_rows_output_does_not_mutate_the_stored_report`).
+
+## Changelog — sixth correction pass (Phase 6 trust-boundary fix)
+
+1. **`validate_recipe_library()` now checks the library's top-level
+   contract, not just `recipes`.** It previously only required
+   `recipes` to be a list; it now also requires `schema_version` (a
+   string, equal to exactly `"2.0.0"`), rejects any top-level field
+   other than `schema_version`/`recipes`/`notes`, and validates `notes`
+   (if present) as a non-empty string. An unsupported or missing
+   `schema_version` is rejected rather than silently read as if it were
+   the current format.
+2. **`resolve_stitch_recipe()`, `find_recipe_by_pattern_id()`, and
+   `find_recipe_by_name()` all validate a directly-supplied `library`
+   before searching it.** Previously, `load_recipe_library()` (the
+   default disk path) validated, but a `library` argument passed
+   directly to any of these three functions was searched as-is — a
+   hand-built or externally-supplied dict could claim
+   `verification.status == "CONFIRMED"` on a recipe that had never
+   actually passed `validate_recipe_v2()`, or hide a duplicate
+   `pattern_id` behind whichever entry a lookup happened to reach
+   first, and be selected as trusted output without ever being checked.
+   Every one of those three functions now runs the supplied library
+   through `validate_recipe_library()` first (via the shared internal
+   `_load_or_validate_library()` gate) and raises `RecipeLibraryError`
+   — consistently, the same exception a broken file already raised —
+   before any lookup, match, or selection happens if it fails.
+   `resolve_stitch_recipe()` validates once per call, not once per
+   lookup term, via private `_find_recipe_by_pattern_id_in()`/
+   `_find_recipe_by_name_in()` helpers that assume an already-validated
+   library; `find_recipe_by_pattern_id()` and `find_recipe_by_name()`
+   remain the safe, independently-validating public functions they were
+   always documented as.
+3. **`ambiguous_match`'s reachable cause narrowed, correctly.**
+   Because a library-internal ambiguous shared alias (or duplicate
+   `pattern_id`) is now rejected at validation time before any search
+   happens, `resolve_stitch_recipe()` can no longer report
+   `ambiguous_match` because of a defect in the library itself — that
+   case now raises `RecipeLibraryError` instead. `ambiguous_match`
+   remains reachable, correctly, when the AI PROPOSAL's own name and
+   one of its own declared aliases each independently match a
+   DIFFERENT, individually valid and unambiguous library recipe — see
+   `tests/test_recipe_library.py`'s
+   `test_ambiguous_match_lists_conflicting_pattern_ids_and_picks_none`,
+   rewritten to exercise this cause specifically, and the new
+   `TrustBoundaryTests` class for the library-defect cases that now
+   raise instead.
+
+## Changelog — seventh correction pass (Phase 7 plan-validation fix)
+
+1. **`_build_swatch_plan()` now stamps every plan it returns with
+   `"ready_for_rendering": True`.** This is the plan's own claim that
+   it was built only after resolution (`trusted_match`) and simulation
+   (`validate_recipe_rows()` reporting `valid: True`) both already
+   succeeded — exactly the precondition `render_swatch_plan()` was
+   always documented to assume, now stated as an explicit field instead
+   of an unstated assumption about how the caller got there.
+2. **`render_swatch_plan()` now validates its own argument before
+   reading any field from it.** Previously it read `plan["name"]`,
+   `plan["foundation_chain_count"]`, `plan["row_1_setup"]`, etc.
+   directly, trusting that whatever it was handed came from
+   `_build_swatch_plan()`. `render_swatch_plan(None)`,
+   `render_swatch_plan([])`, and `render_swatch_plan({})` would all
+   have raised `AttributeError`/`KeyError` rather than returning a
+   structured result. A new `_validate_plan()` check — a dict; the new
+   `ready_for_rendering` field present and exactly `True`; every other
+   required field present; well-formed `trust`, `foundation_chain_count`,
+   `foundation_formula`, step lists (each step needing a known stitch
+   code and a known placement — reusing `engine/schema.py`'s existing
+   `V2_KNOWN_STITCHES`/`V2_PLACEMENTS` constants, not a second
+   hand-maintained list), later-row summaries, and repeat counts — now
+   runs first, returning `{"status": "invalid_plan", "text": None,
+   "warnings": [], "errors": [...]}` for any of the above rather than
+   raising. A plan that passes this check but names an unimplemented
+   terminology still returns `"unsupported_terminology"`, unchanged —
+   see `tests/test_renderer_v2.py`'s
+   `test_valid_ready_plan_with_unsupported_terminology_is_not_invalid_plan`.
+   This is validation of the renderer's own argument shape, not a
+   re-check of recipe/foundation/row correctness (already decided
+   before any plan exists) — `_validate_plan()` never re-derives
+   whether the underlying recipe or simulation was correct.
+
+## Changelog — eighth correction pass (Phase 7 internal-readiness-contract fix)
+
+1. **`_validate_plan()` previously checked only shape, not meaning.**
+   A plan with `"ready_for_rendering": True`, `"trust": {"provenance":
+   "ai"}`, and `"validation_evidence": {}` would have passed every
+   check from the seventh correction pass (a dict with a string
+   `provenance`, an object `validation_evidence`) and gone on to render
+   — even though nothing about it actually represented a trusted,
+   successfully-simulated recipe. `_validate_plan()` now requires
+   `trust.provenance == "library"` exactly and
+   `trust.verification_status == "CONFIRMED"` exactly (both, not
+   either); `validation_evidence.row_1_valid`,
+   `.later_rows_valid`, and `.overall_valid` must each be present and
+   exactly `True` (a new `_is_exactly_true()` helper — `value is True`,
+   never a truthy non-bool like `1`); and every later-row summary's own
+   `"valid"` is now REQUIRED (previously only type-checked if present)
+   and must also be exactly `True`.
+2. **Added cross-field consistency checks** comparing the plan's own
+   fields against each other — never re-running recipe resolution or
+   mathematical simulation, which already happened successfully before
+   a plan could exist: `total_rows == 1 + len(later_rows)`,
+   `row_1_repeat_execution_count == requested_repeat_count`, later-row
+   `row_number`s consecutive starting at 2, and `foundation_chain_count
+   == foundation_formula["foundation_count"]`. Each check only runs
+   once its own inputs already passed their individual type checks, so
+   one malformed field produces one clear error, not a cascade.
+   `warnings` is now also checked to contain only strings.
+3. **Fixed a latent bug this surfaced in the test suite itself.**
+   `tests/test_renderer_v2.py`'s `minimal_plan()` fixture computed
+   `total_rows` from the raw `later_rows` FUNCTION PARAMETER (`None` by
+   default) rather than the actual list used for the plan's
+   `"later_rows"` field (which defaulted to a 1-item list) — an
+   inconsistency that existed before this pass but was invisible until
+   the new `total_rows == 1 + len(later_rows)` check could detect it.
+   Fixed by resolving the default `later_rows` list once, at the top of
+   the fixture, and using that same resolved value for both fields.
+4. **Reverted an unrelated formatting-only change to `docs/testing.md`**
+   (Markdown table alignment and `*emphasis*` → `_emphasis_` markers,
+   apparently from an auto-formatter) that was present in the working
+   tree but outside this phase's scope — restored to its original
+   content via `git checkout -- docs/testing.md`, no content changed.
