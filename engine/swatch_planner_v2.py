@@ -84,15 +84,17 @@ have or compute; every ready plan's warnings say so explicitly.
 
 from copy import deepcopy
 
-from engine.recipe_library import RecipeLibraryError, resolve_stitch_recipe
+from engine.recipe_library import RecipeLibraryError, resolve_stitch_recipe, resolve_stitch_identity
 from engine.recipe_validator import RecipeMathError
 from engine.later_row_validator import validate_recipe_rows
 from engine.renderer_v2 import render_swatch_plan
+from engine.stitch_identification import validate_identification
 
 STATUS_READY = "ready"
 STATUS_NO_TRUSTED_RECIPE = "no_trusted_recipe"
 STATUS_AMBIGUOUS_RECIPE = "ambiguous_recipe"
 STATUS_INVALID_AI_PROPOSAL = "invalid_ai_proposal"
+STATUS_INVALID_IDENTIFICATION = "invalid_identification"
 STATUS_INVALID_LIBRARY = "invalid_library"
 STATUS_SIMULATION_FAILED = "simulation_failed"
 STATUS_SIMULATION_UNSUPPORTED = "simulation_unsupported"
@@ -128,6 +130,135 @@ def _empty_result(status, requested_repeat_count, later_row_count, errors, warni
         "rendered_instructions": None,
         "warnings": warnings or [],
         "errors": errors,
+    }
+
+
+def _invalid_request_result(requested_repeat_count, later_row_count):
+    """
+    Shared by plan_trusted_swatch() and plan_swatch_from_identification():
+    validates requested_repeat_count/later_row_count with the exact rules
+    the validators already use (plain int, bool excluded;
+    requested_repeat_count >= 1; later_row_count >= 0). Returns an
+    already-built STATUS_INVALID_REQUEST result if either is malformed,
+    or None if both are fine -- a bad request never reaches resolution
+    in either pipeline.
+    """
+    if not _is_plain_positive_int(requested_repeat_count, 1):
+        return _empty_result(
+            STATUS_INVALID_REQUEST, requested_repeat_count, later_row_count,
+            errors=[f"requested_repeat_count must be a plain integer >= 1, got {requested_repeat_count!r}"],
+        )
+    if not _is_plain_positive_int(later_row_count, 0):
+        return _empty_result(
+            STATUS_INVALID_REQUEST, requested_repeat_count, later_row_count,
+            errors=[f"later_row_count must be a plain integer >= 0, got {later_row_count!r}"],
+        )
+    return None
+
+
+def _finish_pipeline_from_resolution(resolution, requested_repeat_count, later_row_count, ambiguous_context):
+    """
+    Shared tail of both plan_trusted_swatch() and
+    plan_swatch_from_identification(): takes a resolution dict already
+    produced by EITHER resolve_stitch_recipe() or resolve_stitch_identity()
+    -- whose "status" is one of "no_match" / "untrusted_match" /
+    "ambiguous_match" / "trusted_match" (never "invalid_ai_proposal";
+    only resolve_stitch_recipe() can produce that, and callers handle it
+    themselves before reaching here, since resolve_stitch_identity() has
+    no equivalent status) -- and runs Phase 5 row simulation, structured
+    plan-building, and rendering exactly once, so this logic exists in
+    only one place for both pipelines.
+
+    `ambiguous_context` is a short phrase describing what was looked up,
+    used only to phrase the STATUS_AMBIGUOUS_RECIPE error message (e.g.
+    "the AI proposal's identification" or "the identified stitch_name
+    'filet mesh' / aliases") -- purely cosmetic, never affects behavior.
+
+    Returns the same shaped result dict plan_trusted_swatch() documents
+    in its own docstring (STATUS_AMBIGUOUS_RECIPE / STATUS_NO_TRUSTED_RECIPE
+    / STATUS_SIMULATION_UNSUPPORTED / STATUS_SIMULATION_FAILED /
+    STATUS_RENDER_UNSUPPORTED / STATUS_READY), built the same way
+    regardless of which resolver produced `resolution`.
+    """
+    if resolution["status"] == "ambiguous_match":
+        return _empty_result(
+            STATUS_AMBIGUOUS_RECIPE, requested_repeat_count, later_row_count,
+            errors=[
+                f"{ambiguous_context} matches more than one library recipe: "
+                f"{resolution['conflicting_pattern_ids']}"
+            ],
+            resolution=resolution,
+        )
+    if resolution["status"] in ("no_match", "untrusted_match"):
+        return _empty_result(
+            STATUS_NO_TRUSTED_RECIPE, requested_repeat_count, later_row_count,
+            errors=[], resolution=resolution,
+        )
+
+    # resolution["status"] == "trusted_match" from here on.
+    selected_recipe = resolution["selected_recipe"]
+
+    try:
+        row_validation = validate_recipe_rows(selected_recipe, requested_repeat_count, later_row_count)
+    except RecipeMathError as e:
+        return _empty_result(
+            STATUS_SIMULATION_UNSUPPORTED, requested_repeat_count, later_row_count,
+            errors=[str(e)], resolution=resolution,
+        )
+
+    if not row_validation["valid"]:
+        return _empty_result(
+            STATUS_SIMULATION_FAILED, requested_repeat_count, later_row_count,
+            errors=[
+                f"row-by-row simulation failed at row {row_validation['first_failing_row']}"
+                if row_validation["first_failing_row"] is not None
+                else "row-by-row simulation reported invalid without a specific failing row"
+            ],
+            resolution=resolution,
+            foundation=row_validation["foundation"],
+            row_validation=row_validation,
+        )
+
+    swatch_plan = _build_swatch_plan(selected_recipe, requested_repeat_count, later_row_count, row_validation)
+    render_result = render_swatch_plan(swatch_plan)
+    warnings = list(swatch_plan["warnings"]) + list(render_result.get("warnings", []))
+
+    if render_result["status"] != "rendered":
+        # Every earlier check passed (trusted match, valid simulation),
+        # but the trusted recipe's own terminology isn't one this
+        # renderer implements -- report clearly, never silently render
+        # US wording for a different terminology system, and never
+        # claim "ready" when there are no rendered instructions to use.
+        return {
+            "status": STATUS_RENDER_UNSUPPORTED,
+            "ready_for_user_instructions": False,
+            "resolution": resolution,
+            "selected_recipe": selected_recipe,
+            "provenance": "library",
+            "requested_repeat_count": requested_repeat_count,
+            "later_row_count": later_row_count,
+            "foundation": row_validation["foundation"],
+            "row_validation": row_validation,
+            "swatch_plan": swatch_plan,
+            "rendered_instructions": None,
+            "warnings": warnings,
+            "errors": list(render_result["errors"]),
+        }
+
+    return {
+        "status": STATUS_READY,
+        "ready_for_user_instructions": True,
+        "resolution": resolution,
+        "selected_recipe": selected_recipe,
+        "provenance": "library",
+        "requested_repeat_count": requested_repeat_count,
+        "later_row_count": later_row_count,
+        "foundation": row_validation["foundation"],
+        "row_validation": row_validation,
+        "swatch_plan": swatch_plan,
+        "rendered_instructions": render_result["text"],
+        "warnings": warnings,
+        "errors": [],
     }
 
 
@@ -313,16 +444,9 @@ def plan_trusted_swatch(ai_proposal, requested_repeat_count, later_row_count, li
     "swatch_plan" so mutating the returned plan can never reach back
     into the trusted library recipe.
     """
-    if not _is_plain_positive_int(requested_repeat_count, 1):
-        return _empty_result(
-            STATUS_INVALID_REQUEST, requested_repeat_count, later_row_count,
-            errors=[f"requested_repeat_count must be a plain integer >= 1, got {requested_repeat_count!r}"],
-        )
-    if not _is_plain_positive_int(later_row_count, 0):
-        return _empty_result(
-            STATUS_INVALID_REQUEST, requested_repeat_count, later_row_count,
-            errors=[f"later_row_count must be a plain integer >= 0, got {later_row_count!r}"],
-        )
+    invalid_request = _invalid_request_result(requested_repeat_count, later_row_count)
+    if invalid_request is not None:
+        return invalid_request
 
     try:
         resolution = resolve_stitch_recipe(ai_proposal, library)
@@ -337,83 +461,112 @@ def plan_trusted_swatch(ai_proposal, requested_repeat_count, later_row_count, li
             STATUS_INVALID_AI_PROPOSAL, requested_repeat_count, later_row_count,
             errors=list(resolution["errors"]), resolution=resolution,
         )
-    if resolution["status"] == "ambiguous_match":
-        return _empty_result(
-            STATUS_AMBIGUOUS_RECIPE, requested_repeat_count, later_row_count,
-            errors=[
-                f"the AI proposal's identification matches more than one library recipe: "
-                f"{resolution['conflicting_pattern_ids']}"
-            ],
-            resolution=resolution,
-        )
-    if resolution["status"] in ("no_match", "untrusted_match"):
-        return _empty_result(
-            STATUS_NO_TRUSTED_RECIPE, requested_repeat_count, later_row_count,
-            errors=[], resolution=resolution,
-        )
 
-    # resolution["status"] == "trusted_match" from here on.
-    selected_recipe = resolution["selected_recipe"]
+    return _finish_pipeline_from_resolution(
+        resolution, requested_repeat_count, later_row_count,
+        ambiguous_context="the AI proposal's identification",
+    )
+
+
+def plan_swatch_from_identification(identification, requested_repeat_count, later_row_count, library=None):
+    """
+    Phase 8: the same trusted pipeline as plan_trusted_swatch(), but
+    starting from an AI IDENTIFICATION (engine/stitch_identification.py's
+    {"region_label", "stitch_name", "aliases", "confidence", "uncertainty"}
+    contract -- the shape engine/image_swatch_pipeline.py actually has
+    from a photo) instead of a full AI-proposed v2 recipe.
+
+    This never fabricates a fake AI recipe to hand to
+    resolve_stitch_recipe(); it resolves the identity directly via
+    resolve_stitch_recipe()'s sibling, resolve_stitch_identity() (Phase
+    8, engine/recipe_library.py) -- an identity-only lookup that never
+    invents, infers, or requires row/step data. From the point a trusted
+    match is found onward, this function shares plan_trusted_swatch()'s
+    exact tail (Phase 5 row simulation, plan-building, rendering) via
+    _finish_pipeline_from_resolution() -- the same code, not a re-
+    implementation of it, so both pipelines produce identically-shaped,
+    identically-earned results and carry the same safety guarantees
+    plan_trusted_swatch() documents (only a CONFIRMED library recipe is
+    ever used; an AI's own confidence never overrides trust; every
+    non-ready outcome returns no instructions).
+
+    Parameters:
+      identification          -- a dict expected to match
+                                  engine.stitch_identification's
+                                  contract; validated with
+                                  validate_identification() before
+                                  anything else -- this function never
+                                  assumes it's already valid.
+      requested_repeat_count  -- caller-chosen int >= 1, same rule as
+                                  plan_trusted_swatch().
+      later_row_count         -- caller-chosen int >= 0, same rule as
+                                  plan_trusted_swatch().
+      library                 -- optional; defaults to the real
+                                  production library, exactly like
+                                  plan_trusted_swatch().
+
+    Process:
+      1. Validates requested_repeat_count/later_row_count (see
+         _invalid_request_result()) -- a bad request never reaches
+         identification validation or resolution.
+      2. Validates `identification` with validate_identification(). Any
+         error -> STATUS_INVALID_IDENTIFICATION, carrying the exact
+         validation errors -- nothing is looked up against the library
+         from a malformed identification.
+      3. Calls resolve_stitch_identity(identification["stitch_name"],
+         aliases=identification.get("aliases"), library=library) --
+         `pattern_id` is never supplied here, since this contract has no
+         such field; identity is resolved by name/alias alone. Any
+         RecipeLibraryError -> STATUS_INVALID_LIBRARY, exactly like
+         plan_trusted_swatch().
+      4. From here, identical to plan_trusted_swatch() from the point it
+         has a resolution in hand (see _finish_pipeline_from_resolution()):
+         ambiguous_match -> STATUS_AMBIGUOUS_RECIPE; no_match or
+         untrusted_match -> STATUS_NO_TRUSTED_RECIPE; trusted_match ->
+         Phase 5 simulation, plan-building, and rendering, exactly as
+         plan_trusted_swatch() documents in full.
+
+    Returns the same shaped dict plan_trusted_swatch() returns (see its
+    docstring) -- "resolution" here is a resolve_stitch_identity() result
+    rather than a resolve_stitch_recipe() one (no "comparison" or
+    "ai_proposal" fields; has "reasons" instead -- see
+    resolve_stitch_identity()'s own docstring), but every field this
+    module itself reads from "resolution" (status, selected_recipe,
+    conflicting_pattern_ids) is present in both.
+
+    `identification`'s own `confidence` and `uncertainty` are never read
+    by this function at all -- they carry no weight in whether a match
+    is trusted; a caller wanting to surface them alongside the result
+    (e.g. engine/image_swatch_pipeline.py, per region) already has the
+    original `identification` dict to do so.
+
+    Never mutates identification, the library, or any recipe read from
+    it.
+    """
+    invalid_request = _invalid_request_result(requested_repeat_count, later_row_count)
+    if invalid_request is not None:
+        return invalid_request
+
+    identification_errors = validate_identification(identification)
+    if identification_errors:
+        return _empty_result(
+            STATUS_INVALID_IDENTIFICATION, requested_repeat_count, later_row_count,
+            errors=identification_errors,
+        )
 
     try:
-        row_validation = validate_recipe_rows(selected_recipe, requested_repeat_count, later_row_count)
-    except RecipeMathError as e:
+        resolution = resolve_stitch_identity(
+            identification["stitch_name"],
+            aliases=identification.get("aliases"),
+            library=library,
+        )
+    except RecipeLibraryError as e:
         return _empty_result(
-            STATUS_SIMULATION_UNSUPPORTED, requested_repeat_count, later_row_count,
-            errors=[str(e)], resolution=resolution,
+            STATUS_INVALID_LIBRARY, requested_repeat_count, later_row_count,
+            errors=[str(e)],
         )
 
-    if not row_validation["valid"]:
-        return _empty_result(
-            STATUS_SIMULATION_FAILED, requested_repeat_count, later_row_count,
-            errors=[
-                f"row-by-row simulation failed at row {row_validation['first_failing_row']}"
-                if row_validation["first_failing_row"] is not None
-                else "row-by-row simulation reported invalid without a specific failing row"
-            ],
-            resolution=resolution,
-            foundation=row_validation["foundation"],
-            row_validation=row_validation,
-        )
-
-    swatch_plan = _build_swatch_plan(selected_recipe, requested_repeat_count, later_row_count, row_validation)
-    render_result = render_swatch_plan(swatch_plan)
-    warnings = list(swatch_plan["warnings"]) + list(render_result.get("warnings", []))
-
-    if render_result["status"] != "rendered":
-        # Every earlier check passed (trusted match, valid simulation),
-        # but the trusted recipe's own terminology isn't one this
-        # renderer implements -- report clearly, never silently render
-        # US wording for a different terminology system, and never
-        # claim "ready" when there are no rendered instructions to use.
-        return {
-            "status": STATUS_RENDER_UNSUPPORTED,
-            "ready_for_user_instructions": False,
-            "resolution": resolution,
-            "selected_recipe": selected_recipe,
-            "provenance": "library",
-            "requested_repeat_count": requested_repeat_count,
-            "later_row_count": later_row_count,
-            "foundation": row_validation["foundation"],
-            "row_validation": row_validation,
-            "swatch_plan": swatch_plan,
-            "rendered_instructions": None,
-            "warnings": warnings,
-            "errors": list(render_result["errors"]),
-        }
-
-    return {
-        "status": STATUS_READY,
-        "ready_for_user_instructions": True,
-        "resolution": resolution,
-        "selected_recipe": selected_recipe,
-        "provenance": "library",
-        "requested_repeat_count": requested_repeat_count,
-        "later_row_count": later_row_count,
-        "foundation": row_validation["foundation"],
-        "row_validation": row_validation,
-        "swatch_plan": swatch_plan,
-        "rendered_instructions": render_result["text"],
-        "warnings": warnings,
-        "errors": [],
-    }
+    return _finish_pipeline_from_resolution(
+        resolution, requested_repeat_count, later_row_count,
+        ambiguous_context=f"the identified stitch_name {identification['stitch_name']!r} / aliases",
+    )
