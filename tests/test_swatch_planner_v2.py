@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from engine.swatch_planner_v2 import (
     STATUS_AMBIGUOUS_RECIPE,
     STATUS_INVALID_AI_PROPOSAL,
+    STATUS_INVALID_IDENTIFICATION,
     STATUS_INVALID_LIBRARY,
     STATUS_INVALID_REQUEST,
     STATUS_NO_TRUSTED_RECIPE,
@@ -29,6 +30,7 @@ from engine.swatch_planner_v2 import (
     STATUS_RENDER_UNSUPPORTED,
     STATUS_SIMULATION_FAILED,
     STATUS_SIMULATION_UNSUPPORTED,
+    plan_swatch_from_identification,
     plan_trusted_swatch,
 )
 
@@ -340,6 +342,233 @@ class StructuredSwatchPlanTests(unittest.TestCase):
         body = result["rendered_instructions"].split("Notes:")[0]
         self.assertNotIn("4 inches", body)
         self.assertNotIn("four inches", body)
+
+
+# ---------------------------------------------------------------------------
+# Phase 8: plan_swatch_from_identification() -- the same trusted tail as
+# plan_trusted_swatch(), starting from an AI IDENTIFICATION instead of a
+# full AI-proposed recipe. No fake AI recipe is ever fabricated here.
+# ---------------------------------------------------------------------------
+
+def make_identification(region_label="cuff", stitch_name="filet mesh", aliases=None,
+                         confidence=0.82, uncertainty=None):
+    identification = {
+        "region_label": region_label,
+        "stitch_name": stitch_name,
+        "aliases": aliases if aliases is not None else [],
+        "confidence": confidence,
+        "uncertainty": uncertainty,
+    }
+    return identification
+
+
+class PlanFromIdentificationReadyPathTests(unittest.TestCase):
+    def test_ready_plan_uses_the_trusted_recipe(self):
+        library = library_of(TRUSTED_RECIPE)
+        identification = make_identification(stitch_name="filet mesh")
+
+        result = plan_swatch_from_identification(identification, requested_repeat_count=4, later_row_count=2, library=library)
+
+        self.assertEqual(result["status"], STATUS_READY)
+        self.assertTrue(result["ready_for_user_instructions"])
+        self.assertEqual(result["provenance"], "library")
+        self.assertIs(result["selected_recipe"], TRUSTED_RECIPE)
+        self.assertIn("Filet Mesh", result["rendered_instructions"])
+
+    def test_ready_plan_matches_by_alias(self):
+        library = library_of(TRUSTED_RECIPE)
+        identification = make_identification(stitch_name="something else", aliases=["open filet mesh"])
+
+        result = plan_swatch_from_identification(identification, 4, 2, library=library)
+
+        self.assertEqual(result["status"], STATUS_READY)
+        self.assertIs(result["selected_recipe"], TRUSTED_RECIPE)
+
+    def test_high_confidence_alone_never_produces_a_ready_plan_without_a_library_match(self):
+        library = library_of()  # empty -- nothing to match against
+        identification = make_identification(stitch_name="filet mesh", confidence=1.0)
+
+        result = plan_swatch_from_identification(identification, 4, 2, library=library)
+
+        self.assertEqual(result["status"], STATUS_NO_TRUSTED_RECIPE)
+        self.assertFalse(result["ready_for_user_instructions"])
+        self.assertIsNone(result["rendered_instructions"])
+
+    def test_ready_plan_never_mutates_identification_or_library(self):
+        library = library_of(TRUSTED_RECIPE)
+        library_before = copy.deepcopy(library)
+        identification = make_identification(stitch_name="filet mesh")
+        identification_before = copy.deepcopy(identification)
+
+        result = plan_swatch_from_identification(identification, 3, 1, library=library)
+
+        self.assertEqual(library, library_before)
+        self.assertEqual(identification, identification_before)
+        result["swatch_plan"]["row_1_setup"].append({"stitch": "SKIP", "count": 99, "placement": "next_foundation_chain"})
+        self.assertEqual(library["recipes"][0]["row_1"]["setup"], [])
+
+
+class PlanFromIdentificationInvalidRequestTests(unittest.TestCase):
+    def test_bad_repeat_count_is_invalid_request(self):
+        library = library_of(TRUSTED_RECIPE)
+        identification = make_identification()
+        for bad in (0, -1, "3", None, True):
+            with self.subTest(bad=bad):
+                result = plan_swatch_from_identification(identification, bad, 1, library)
+                self.assertEqual(result["status"], STATUS_INVALID_REQUEST)
+                self.assertIsNone(result["resolution"])
+
+    def test_negative_later_row_count_is_invalid_request(self):
+        library = library_of(TRUSTED_RECIPE)
+        identification = make_identification()
+        result = plan_swatch_from_identification(identification, 3, -1, library)
+        self.assertEqual(result["status"], STATUS_INVALID_REQUEST)
+
+
+class PlanFromIdentificationInvalidIdentificationTests(unittest.TestCase):
+    def test_missing_stitch_name_is_invalid_identification(self):
+        library = library_of(TRUSTED_RECIPE)
+        identification = make_identification()
+        del identification["stitch_name"]
+        result = plan_swatch_from_identification(identification, 3, 1, library)
+        self.assertEqual(result["status"], STATUS_INVALID_IDENTIFICATION)
+        self.assertFalse(result["ready_for_user_instructions"])
+        self.assertIsNone(result["rendered_instructions"])
+        self.assertIsNone(result["resolution"])
+        self.assertTrue(result["errors"])
+
+    def test_smuggled_row_instructions_are_rejected_as_invalid_identification(self):
+        library = library_of(TRUSTED_RECIPE)
+        identification = make_identification()
+        identification["row_1"] = {"setup": [], "repeat": []}
+        result = plan_swatch_from_identification(identification, 3, 1, library)
+        self.assertEqual(result["status"], STATUS_INVALID_IDENTIFICATION)
+
+    def test_bad_confidence_shape_is_invalid_identification(self):
+        library = library_of(TRUSTED_RECIPE)
+        identification = make_identification(confidence="very sure")
+        result = plan_swatch_from_identification(identification, 3, 1, library)
+        self.assertEqual(result["status"], STATUS_INVALID_IDENTIFICATION)
+
+    def test_non_dict_identification_is_invalid_identification(self):
+        library = library_of(TRUSTED_RECIPE)
+        result = plan_swatch_from_identification("filet mesh", 3, 1, library)
+        self.assertEqual(result["status"], STATUS_INVALID_IDENTIFICATION)
+
+
+class PlanFromIdentificationNoTrustedRecipeTests(unittest.TestCase):
+    def test_no_library_match(self):
+        library = library_of(TRUSTED_RECIPE)
+        identification = make_identification(stitch_name="popcorn stitch")
+        result = plan_swatch_from_identification(identification, 3, 1, library)
+        self.assertEqual(result["status"], STATUS_NO_TRUSTED_RECIPE)
+        self.assertEqual(result["resolution"]["status"], "no_match")
+
+    def test_matched_but_unconfirmed_recipe_is_not_trusted(self):
+        unconfirmed = make_recipe("waffle_v1", "Waffle Stitch", status="SIMULATION_VALID")
+        library = library_of(unconfirmed)
+        identification = make_identification(stitch_name="waffle stitch")
+        result = plan_swatch_from_identification(identification, 3, 1, library)
+        self.assertEqual(result["status"], STATUS_NO_TRUSTED_RECIPE)
+        self.assertEqual(result["resolution"]["status"], "untrusted_match")
+
+    def test_against_the_real_empty_production_library(self):
+        # As of Phase 8, the real production v2 library has zero
+        # confirmed recipes -- library=None must honestly report
+        # no_trusted_recipe, never fabricate a match.
+        identification = make_identification(stitch_name="filet mesh")
+        result = plan_swatch_from_identification(identification, 3, 1)
+        self.assertEqual(result["status"], STATUS_NO_TRUSTED_RECIPE)
+        self.assertFalse(result["ready_for_user_instructions"])
+        self.assertIsNone(result["rendered_instructions"])
+
+
+class PlanFromIdentificationAmbiguousRecipeTests(unittest.TestCase):
+    def test_ambiguous_match_lists_conflicts_and_produces_nothing(self):
+        recipe_a = make_recipe("dup_a", "Stitch A", status="CONFIRMED")
+        recipe_b = make_recipe("dup_b", "Open Stitch", aliases=["stitch b"], status="CONFIRMED")
+        library = library_of(recipe_a, recipe_b)
+        identification = make_identification(stitch_name="Stitch A", aliases=["stitch b"])
+
+        result = plan_swatch_from_identification(identification, 3, 1, library)
+
+        self.assertEqual(result["status"], STATUS_AMBIGUOUS_RECIPE)
+        self.assertFalse(result["ready_for_user_instructions"])
+        self.assertIsNone(result["rendered_instructions"])
+        self.assertIn("dup_a", result["errors"][0])
+        self.assertIn("dup_b", result["errors"][0])
+
+
+class PlanFromIdentificationInvalidLibraryTests(unittest.TestCase):
+    def test_malformed_directly_supplied_library(self):
+        identification = make_identification()
+        result = plan_swatch_from_identification(identification, 3, 1, {"recipes": "not a list"})
+        self.assertEqual(result["status"], STATUS_INVALID_LIBRARY)
+        self.assertIsNone(result["resolution"])
+
+
+class PlanFromIdentificationSimulationTests(unittest.TestCase):
+    def test_same_stitch_with_no_established_target_is_unsupported_not_a_crash(self):
+        bad_sim = make_recipe(
+            "p_bad_sim", "Bad Sim Stitch", status="CONFIRMED",
+            later_setup=[{"stitch": "CH", "count": 1, "placement": "turning_chain"}],
+            later_repeat=[{"stitch": "SC", "count": 1, "placement": "same_stitch"}],
+        )
+        library = library_of(bad_sim)
+        identification = make_identification(stitch_name="Bad Sim Stitch")
+
+        result = plan_swatch_from_identification(identification, 3, 1, library)
+
+        self.assertEqual(result["status"], STATUS_SIMULATION_UNSUPPORTED)
+        self.assertFalse(result["ready_for_user_instructions"])
+
+    def test_foundation_mismatch_is_simulation_failed_not_raised(self):
+        bad_math = make_recipe("p_bad_math", "Bad Math Stitch", status="CONFIRMED",
+                                repeat_multiple=1, additional_chains=5)
+        library = library_of(bad_math)
+        identification = make_identification(stitch_name="Bad Math Stitch")
+
+        result = plan_swatch_from_identification(identification, 3, 1, library)
+
+        self.assertEqual(result["status"], STATUS_SIMULATION_FAILED)
+        self.assertIsNotNone(result["row_validation"])
+
+
+class PlanFromIdentificationRenderUnsupportedTests(unittest.TestCase):
+    def test_uk_terminology_is_not_silently_rendered_as_us(self):
+        uk_recipe = make_recipe("p_uk", "UK Stitch", status="CONFIRMED", terminology="UK")
+        library = library_of(uk_recipe)
+        identification = make_identification(stitch_name="UK Stitch")
+
+        result = plan_swatch_from_identification(identification, 3, 1, library)
+
+        self.assertEqual(result["status"], STATUS_RENDER_UNSUPPORTED)
+        self.assertIsNone(result["rendered_instructions"])
+        self.assertIsNotNone(result["swatch_plan"])
+
+
+class PlanFromIdentificationSharedTailConsistencyTests(unittest.TestCase):
+    def test_produces_the_same_shaped_ready_result_as_plan_trusted_swatch(self):
+        library = library_of(TRUSTED_RECIPE)
+        ai_proposal = make_recipe("ai_guess", "filet mesh", status="AI_PROPOSED")
+        identification = make_identification(stitch_name="filet mesh")
+
+        from_recipe = plan_trusted_swatch(ai_proposal, 4, 2, library=library)
+        from_identification = plan_swatch_from_identification(identification, 4, 2, library=library)
+
+        self.assertEqual(from_recipe["status"], from_identification["status"])
+        self.assertEqual(from_recipe["swatch_plan"], from_identification["swatch_plan"])
+        self.assertEqual(from_recipe["rendered_instructions"], from_identification["rendered_instructions"])
+
+    def test_plan_trusted_swatch_still_works_unchanged(self):
+        # Lightweight spot check that refactoring plan_trusted_swatch()
+        # to share _finish_pipeline_from_resolution() did not change its
+        # own external behavior -- the full suite above is authoritative.
+        library = library_of(TRUSTED_RECIPE)
+        ai_proposal = make_recipe("ai_guess", "filet mesh", status="AI_PROPOSED")
+        result = plan_trusted_swatch(ai_proposal, 5, 2, library=library)
+        self.assertEqual(result["status"], STATUS_READY)
+        self.assertIs(result["selected_recipe"], TRUSTED_RECIPE)
 
 
 # ---------------------------------------------------------------------------
