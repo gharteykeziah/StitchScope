@@ -858,3 +858,209 @@ def resolve_stitch_recipe(ai_proposal, library=None):
         "errors": [],
         "ai_proposal": ai_proposal_copy,
     }
+
+
+def resolve_stitch_identity(stitch_name, aliases=None, pattern_id=None, library=None):
+    """
+    Phase 8: resolves an AI-supplied stitch IDENTITY -- a name, optional
+    aliases, and an optional exact pattern_id -- against the trusted
+    recipe library, WITHOUT ever being handed (or needing) a full AI-
+    proposed recipe.
+
+    This exists because Phase 8's image pathway calls
+    engine.vision.get_vision_proposal_from_photo(), which returns only
+    an identification (region_label, stitch_name/stitch_family,
+    confidence, uncertainty) -- see engine/stitch_identification.py.
+    There is no AI-proposed row structure to validate with
+    validate_recipe_v2() the way resolve_stitch_recipe() does, so this
+    function cannot be, and does not try to be, "resolve_stitch_recipe()
+    but with the recipe argument omitted." It looks up by name/alias/
+    pattern_id exactly like resolve_stitch_recipe() does internally, and
+    shares its trust boundary, its lookup order, its ambiguity handling,
+    and its STATUS_* vocabulary -- but it never accepts, inspects,
+    stores, or returns anything resembling AI-authored row instructions.
+    resolve_stitch_recipe() is untouched by this addition; this is a new,
+    independent entry point beside it.
+
+    library defaults to load_recipe_library() (the real production
+    library) if not supplied.
+
+    TRUST BOUNDARY: exactly like resolve_stitch_recipe(), the library is
+    validated (via _load_or_validate_library()) BEFORE anything is
+    searched, every time, regardless of where it came from -- raises
+    RecipeLibraryError immediately if a directly-supplied `library`
+    fails validate_recipe_library(). No lookup, match, or selection ever
+    runs against an unvalidated library.
+
+    ARGUMENT VALIDATION: stitch_name, aliases, and pattern_id are
+    caller-supplied Python values, not AI JSON needing schema validation
+    -- malformed arguments here are a caller bug, not a resolvable
+    outcome, so they raise ValueError immediately (consistent with
+    normalize_stitch_name()'s own TypeError-for-bad-input convention):
+      - stitch_name must be a non-empty string.
+      - aliases, if not None, must be a list of strings (may be empty;
+        defaults to [] when not supplied).
+      - pattern_id, if not None, must be a string.
+    None of these argument checks ever raise RecipeLibraryError -- that
+    exception is reserved for a broken LIBRARY, never for a malformed
+    identity argument.
+
+    Process (mirrors resolve_stitch_recipe(), minus AI-recipe schema
+    validation and AI-vs-library comparison, since there is no AI recipe
+    here):
+      1. Validates the library (see TRUST BOUNDARY above).
+      2. Validates stitch_name/aliases/pattern_id (see ARGUMENT
+         VALIDATION above) -- raises before any lookup if malformed.
+      3. Searches the library deterministically, in the same fixed order
+         resolve_stitch_recipe() uses: pattern_id first (only if
+         supplied), then stitch_name, then every alias. Every attempted
+         term is recorded in "lookup_terms" regardless of whether it
+         matched.
+      4. Every recipe matched by ANY of those terms is collected
+         (deduplicated by pattern_id). Zero matches -> no_match. More
+         than one DISTINCT recipe matched -> ambiguous_match, naming
+         every conflicting pattern_id -- this function NEVER guesses
+         which one the AI "must have meant," exactly like
+         resolve_stitch_recipe().
+      5. Exactly one matched recipe -> trusted_match if
+         is_recipe_trusted() is True for it, otherwise untrusted_match.
+
+    Returns a dict:
+      {"status": one of STATUS_TRUSTED_MATCH / STATUS_UNTRUSTED_MATCH /
+                 STATUS_NO_MATCH / STATUS_AMBIGUOUS_MATCH,
+       "lookup_terms": [{"kind": "pattern_id"|"name"|"alias",
+                          "raw": str, "normalized": str|None}, ...],
+       "matched_recipe": <recipe dict> | None,
+           # the single library recipe that matched, regardless of
+           # trust -- present for trusted_match and untrusted_match,
+           # None for every other status.
+       "trusted": bool,
+           # True only when matched_recipe is not None AND
+           # is_recipe_trusted(matched_recipe) is True.
+       "selected_recipe": <recipe dict> | None,
+           # the recipe this function says is SAFE to use for real
+           # output -- equals matched_recipe when status is
+           # trusted_match, otherwise always None. This is the ONLY
+           # field a caller (plan_swatch_from_identification()) should
+           # ever build a swatch from -- confidence, uncertainty, and
+           # every other identification field are irrelevant to this
+           # decision (see this function's ARGUMENT VALIDATION: it does
+           # not even accept a confidence parameter).
+       "provenance": "library" | None,
+           # where selected_recipe came from -- "library" when there is
+           # one, otherwise None. Never "ai": no path in this function
+           # promotes the identified stitch_name/aliases themselves to
+           # trusted output -- only a pre-existing library recipe
+           # already at CONFIRMED can be selected.
+       "conflicting_pattern_ids": [str, ...] | None,
+           # present only for ambiguous_match; every pattern_id that
+           # matched one of the attempted lookup terms.
+       "reasons": [str, ...]}
+           # human-readable explanation of how "status" was reached --
+           # which term(s) matched, which library recipe (if any), and
+           # why it was or wasn't trusted. Diagnostic only; never used
+           # by any caller to decide trust.
+
+    TRUSTED-MATCH: selected_recipe is the LIBRARY recipe -- there is no
+    AI-authored alternative to prefer it over, since this function was
+    never given one.
+
+    NO-MATCH / AMBIGUOUS-MATCH: selected_recipe and provenance stay
+    None; conflicting_pattern_ids is populated only for ambiguous_match.
+    Nothing here infers a recipe, invents steps, or promotes anything to
+    CONFIRMED -- it only ever reads is_recipe_trusted() on a recipe that
+    was already CONFIRMED before this call happened.
+
+    Never mutates the library or any recipe read from it.
+    """
+    if not isinstance(stitch_name, str) or not stitch_name.strip():
+        raise ValueError(f"stitch_name must be a non-empty string, got {stitch_name!r}")
+
+    if aliases is None:
+        aliases = []
+    if not isinstance(aliases, list) or not all(isinstance(a, str) for a in aliases):
+        raise ValueError(f"aliases must be a list of strings, got {aliases!r}")
+
+    if pattern_id is not None and not isinstance(pattern_id, str):
+        raise ValueError(f"pattern_id must be a string or None, got {pattern_id!r}")
+
+    library = _load_or_validate_library(library)
+
+    lookup_terms = []
+    matched_by_pattern_id = {}
+
+    if pattern_id is not None:
+        lookup_terms.append(_lookup_term("pattern_id", pattern_id))
+        by_id = _find_recipe_by_pattern_id_in(pattern_id, library)
+        if by_id is not None:
+            matched_by_pattern_id[by_id["pattern_id"]] = by_id
+
+    lookup_terms.append(_lookup_term("name", stitch_name, normalize_stitch_name(stitch_name)))
+    for match in _find_recipe_by_name_in(stitch_name, library):
+        matched_by_pattern_id[match["pattern_id"]] = match
+
+    for alias in aliases:
+        lookup_terms.append(_lookup_term("alias", alias, normalize_stitch_name(alias)))
+        for match in _find_recipe_by_name_in(alias, library):
+            matched_by_pattern_id[match["pattern_id"]] = match
+
+    matches = list(matched_by_pattern_id.values())
+
+    if len(matches) == 0:
+        return {
+            "status": STATUS_NO_MATCH,
+            "lookup_terms": lookup_terms,
+            "matched_recipe": None,
+            "trusted": False,
+            "selected_recipe": None,
+            "provenance": None,
+            "conflicting_pattern_ids": None,
+            "reasons": [
+                f"no library recipe's name/aliases/pattern_id matched stitch_name "
+                f"{stitch_name!r}, aliases {aliases!r}, or pattern_id {pattern_id!r}"
+            ],
+        }
+
+    if len(matches) > 1:
+        conflicting = sorted(matched_by_pattern_id.keys())
+        return {
+            "status": STATUS_AMBIGUOUS_MATCH,
+            "lookup_terms": lookup_terms,
+            "matched_recipe": None,
+            "trusted": False,
+            "selected_recipe": None,
+            "provenance": None,
+            "conflicting_pattern_ids": conflicting,
+            "reasons": [
+                f"stitch_name {stitch_name!r} / aliases {aliases!r} matched more than one "
+                f"distinct library recipe: {conflicting} -- refusing to guess which was meant"
+            ],
+        }
+
+    matched_recipe = matches[0]
+    trusted = is_recipe_trusted(matched_recipe)
+    matched_status = matched_recipe.get("verification", {}).get("status")
+
+    if trusted:
+        reasons = [
+            f"stitch_name/alias/pattern_id matched library recipe "
+            f"{matched_recipe.get('pattern_id')!r}, whose verification.status is "
+            f"CONFIRMED -- safe to use for trusted output"
+        ]
+    else:
+        reasons = [
+            f"stitch_name/alias/pattern_id matched library recipe "
+            f"{matched_recipe.get('pattern_id')!r}, but its verification.status is "
+            f"{matched_status!r}, not CONFIRMED -- not safe to use for trusted output"
+        ]
+
+    return {
+        "status": STATUS_TRUSTED_MATCH if trusted else STATUS_UNTRUSTED_MATCH,
+        "lookup_terms": lookup_terms,
+        "matched_recipe": matched_recipe,
+        "trusted": trusted,
+        "selected_recipe": matched_recipe if trusted else None,
+        "provenance": "library" if trusted else None,
+        "conflicting_pattern_ids": None,
+        "reasons": reasons,
+    }
