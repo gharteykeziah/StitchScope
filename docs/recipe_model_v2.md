@@ -1,12 +1,19 @@
-# StitchScope Recipe Model v2 — Design (Phase 1), now with schema enforcement (Phase 2), a foundation calculator (Phase 3), row-1 math validation (Phase 4A), typed later-row validation (Phase 5), a trusted recipe library (Phase 6), and a trusted swatch planner/renderer (Phase 7)
+# StitchScope Recipe Model v2 — Design (Phase 1), now with schema enforcement (Phase 2), a foundation calculator (Phase 3), row-1 math validation (Phase 4A), typed later-row validation (Phase 5), a trusted recipe library (Phase 6), a trusted swatch planner/renderer (Phase 7), and a real-image identification pathway wired to that trusted pipeline (Phase 8)
 
-**Status: still not wired into the production photo pathway.**
-`engine/vision.py`, `engine/swatch.py` (its own, different v1 foundation
-logic), `engine/confirmed_patterns.py`, `run_real_photo.py`, and
-`contracts/stitch_recipe_schema_v1.json` are all unchanged by anything
-below. What *has* been built since this document was first written:
-Phase 2 added `contracts/stitch_recipe_schema_v2.json` and
-`engine/schema.py`'s `validate_recipe_v2()`, actually enforcing the
+**Status: wired to a real image pathway (Phase 8), but the production
+v2 library is still empty, so every real run currently — and
+correctly — reports "no trusted recipe."**
+`engine/swatch.py` (its own, different v1 foundation logic),
+`engine/confirmed_patterns.py`, `run_real_photo.py`, and
+`contracts/stitch_recipe_schema_v1.json` are still an entirely separate,
+untouched, un-trust-gated pathway — see "Phase 8: connecting real-image
+identification to the trusted v2 pipeline" for exactly how the two
+coexist and never cross-wire. `engine/vision.py` itself is also
+unchanged: Phase 8 *reuses* its existing `get_vision_proposal_from_photo()`
+(identification-only, no row structure) as-is, via dependency injection,
+rather than modifying it. What *has* been built since this document was
+first written: Phase 2 added `contracts/stitch_recipe_schema_v2.json`
+and `engine/schema.py`'s `validate_recipe_v2()`, actually enforcing the
 shape this document designs. Phase 3 added
 `engine/foundation.py`'s `calculate_foundation()` — see "Phase 3: the
 foundation calculator" for what it does and doesn't do. Phase 4A added
@@ -24,9 +31,14 @@ a fresh (untrusted) AI proposal for the same stitch. Phase 7 added
 7: trusted swatch planner and user-facing renderer" for how a
 `trusted_match` recipe is turned into a fully simulated, evidence
 -backed swatch plan and rendered into plain instructions, and for every
-explicit way that pipeline refuses instead. The rest of this document
+explicit way that pipeline refuses instead. Phase 8 added
+`engine/stitch_identification.py`, `engine/image_swatch_pipeline.py`,
+and `run_trusted_swatch_from_photo.py` — see "Phase 8: connecting
+real-image identification to the trusted v2 pipeline" for how a real
+photo now reaches that same trusted pipeline, one region at a time, with
+the AI trusted for identification only. The rest of this document
 (sections 1–11) is the original Phase 1 design discussion, left as
-written; only this status note and the Phase 3/4A/5/6/7 sections are
+written; only this status note and the Phase 3/4A/5/6/7/8 sections are
 new.
 
 *This is the corrected revision of the Phase 1 design. See the changelog
@@ -1203,6 +1215,232 @@ distinguish the two, so the renderer always uses the generic phrase.
 Making the more precise wording possible would mean changing what
 Phase 4A/5 track — out of scope for a renderer-only module that must
 not perform validation itself.
+
+## Phase 8: connecting real-image identification to the trusted v2 pipeline
+
+Phase 8 is the final integration for the first repeat-based flat-swatch
+system: **image → AI stitch identification → trusted v2 recipe lookup →
+full mathematical simulation → trusted swatch plan → readable
+instructions.** The AI may identify a stitch; it must never be allowed
+to supply the actual instructions a crocheter follows.
+
+### The pipeline
+
+```
+image_path
+    ↓
+engine.vision.get_vision_proposal_from_photo()  (reused as-is, via
+    dependency injection — IDENTIFICATION ONLY, no row structure)
+    ↓
+identification_from_vision_region()  (engine/stitch_identification.py —
+    adapts stitch_family/uncertain_fields to stitch_name/uncertainty)
+    ↓
+validate_identification()  (rejects any smuggled instruction field)
+    ↓
+resolve_stitch_identity()  (engine/recipe_library.py — name/alias/
+    pattern_id lookup against the trusted library, NO AI recipe involved)
+    ↓
+require status == trusted_match; use ONLY the library's own recipe
+    ↓
+Phase 5 full row simulation (validate_recipe_rows(), on that recipe)
+    ↓
+build swatch plan + render instructions (identical to Phase 7's tail)
+```
+
+Every stage before `resolve_stitch_identity()` only ever produces or
+checks an **identification** — a stitch name, optional aliases, a
+confidence score, and an optional uncertainty note. None of it can
+produce a foundation, a setup step, a repeat step, or a later-row step;
+there is structurally no channel for the AI to inject row-level
+instructions into this pipeline at all.
+
+### The identification contract
+
+`engine/stitch_identification.py` defines the small, closed-shape
+object every stage after the vision call operates on:
+
+```json
+{"region_label": "cuff", "stitch_name": "filet mesh", "aliases": [],
+ "confidence": 0.82, "uncertainty": null}
+```
+
+`region_label` and `stitch_name` are required non-empty strings;
+`aliases` (default `[]`) is a list of non-empty strings; `confidence`
+is a required real number in `[0, 1]` (booleans explicitly excluded,
+the same rule `_validate_region()` already uses for the v3 proposal
+schema); `uncertainty` is optional/nullable. `validate_identification()`
+rejects any unexpected field outright — `additionalProperties: false`
+discipline, matching `contracts/stitch_recipe_schema_v2.json` — so a
+smuggled `"row_1"` or `"repeat"` field is refused, not silently
+ignored. `identification_from_vision_region()` is the small adapter
+from `engine/vision.py`'s existing proposal-region shape
+(`stitch_family`, `uncertain_fields`) into this contract; it changes
+field names and shape only, never image encoding or the API call
+itself, and `engine/vision.py` is not modified at all.
+
+**Confidence is validated for shape only, never read for its value.**
+Nothing downstream inspects whether `confidence` is high or low to
+decide anything — `resolve_stitch_identity()` (see below) does not
+even accept a confidence parameter. A confidence of `1.0` carries
+exactly as much trust-deciding weight as `0.0`: none.
+
+### Identity-only resolution: `resolve_stitch_identity()`
+
+`engine/recipe_library.py` gains a second public resolver alongside
+Phase 6's `resolve_stitch_recipe()` (which is untouched — every
+existing call site and test keeps working exactly as before):
+
+```python
+resolve_stitch_identity(stitch_name, aliases=None, pattern_id=None, library=None)
+```
+
+It shares `resolve_stitch_recipe()`'s trust boundary
+(`_load_or_validate_library()` — a directly-supplied library is
+always validated before anything is searched), lookup order
+(`pattern_id` → `name` → every alias), ambiguity handling (never
+guesses between two distinct matches — reports every conflicting
+`pattern_id` instead), and `is_recipe_trusted()` policy (only
+`verification.status == "CONFIRMED"` exactly authorizes a
+`selected_recipe`). It differs from `resolve_stitch_recipe()` in one
+essential way: **there is no AI-proposed recipe to validate or
+compare against** — this function only ever receives a name, aliases,
+and an optional pattern_id, so it has no `validate_recipe_v2()` step,
+no `invalid_ai_proposal` status, and no AI-vs-library `comparison`
+field. Malformed *arguments* (a non-string `stitch_name`, a non-list
+`aliases`) raise `ValueError` immediately — a caller bug, not a
+resolvable outcome — consistent with `normalize_stitch_name()`'s own
+`TypeError`-for-bad-input convention; a malformed *library* still
+raises the same `RecipeLibraryError` `resolve_stitch_recipe()` raises.
+Returns `trusted_match` / `untrusted_match` / `no_match` /
+`ambiguous_match`, with `lookup_terms`, `matched_recipe`,
+`selected_recipe`, `trusted`, `provenance`, `conflicting_pattern_ids`,
+and a human-readable `reasons` list explaining how that status was
+reached.
+
+### Shared planner tail: `plan_swatch_from_identification()`
+
+`engine/swatch_planner_v2.py` gains a sibling to Phase 7's
+`plan_trusted_swatch()` — same signature shape, same return shape,
+same status vocabulary, but starting from an identification instead of
+a full AI-proposed recipe:
+
+```python
+plan_swatch_from_identification(identification, requested_repeat_count, later_row_count, library=None)
+```
+
+This never fabricates a fake AI recipe to hand to
+`resolve_stitch_recipe()`. Instead, both `plan_trusted_swatch()` and
+`plan_swatch_from_identification()` were refactored to share two small
+helpers: `_invalid_request_result()` (the `requested_repeat_count`/
+`later_row_count` validation both need) and
+`_finish_pipeline_from_resolution()` (everything from "a resolution is
+in hand" through Phase 5 simulation, structured plan-building, and
+rendering — identical either way, since both resolvers return the same
+`status`/`selected_recipe`/`conflicting_pattern_ids` shape at that
+point). `plan_trusted_swatch()`'s own external behavior is unchanged;
+this is a genuine refactor, not a rewrite, and its own test suite
+(`tests/test_swatch_planner_v2.py`) is the proof — it still passes
+unmodified in behavior.
+
+Adds one new status, `invalid_identification`, for when
+`validate_identification()` reports errors — nothing is looked up
+against the library from a malformed identification. Every other
+status (`no_trusted_recipe`, `ambiguous_recipe`, `invalid_library`,
+`simulation_unsupported`, `simulation_failed`, `render_unsupported`,
+`ready`) means exactly what it means in Phase 7's `plan_trusted_swatch()`.
+
+### The image-to-swatch orchestrator: `generate_swatch_from_image()`
+
+`engine/image_swatch_pipeline.py` is the new top-level entry point,
+driving one photo's regions through the pipeline above:
+
+```python
+generate_swatch_from_image(image_path, requested_repeat_count=6, later_row_count=3, library=None, vision_client=None)
+```
+
+`vision_client` defaults to `engine.vision.get_vision_proposal_from_photo`
+(the real, paid API call) but is fully dependency-injected — every test
+and offline demonstration in this project passes a fake callable
+instead, so the entire pipeline (including trust resolution, Phase 5
+simulation, and rendering) is exercisable with zero API calls and zero
+credentials. Image-path validation (file exists; extension is one of
+`.jpg`/`.jpeg`/`.png`, the same set `engine/vision.py`'s
+`_media_type_for()` accepts) happens **before** `vision_client` is ever
+invoked — a missing file or bad extension never spends a call, real or
+injected. `VisionProposalError` (the one exception type
+`engine/vision.py`'s real calls raise for every expected API failure)
+and `OSError` (an image that passed the path check but couldn't
+actually be read) are both caught and reported as clear statuses,
+never a raw traceback. Whatever `vision_client` returns is validated
+again with `validate_proposal()` — even though the real function
+already validates internally — because an injected test double is not
+guaranteed to; a missing or empty `"regions"` list, or a malformed
+region, is reported as `invalid_ai_response` before any region is
+touched.
+
+Every region is then processed **completely independently** through
+`identification_from_vision_region()` → `plan_swatch_from_identification()`:
+one region's failure (no trusted recipe, ambiguous match, simulation
+failure) never affects another region's result, and regions are never
+grouped or merged by similar-looking stitch names, even when two
+regions are both (say) called "mesh" by the AI. Each region's result
+carries its label, its adapted identification (confidence and
+uncertainty included, for display only — never for a trust decision),
+the resolver's own status, the selected trusted `pattern_id` if any,
+the swatch-planner's own status, and rendered instructions **only**
+when that region's status is `ready`.
+
+### `run_trusted_swatch_from_photo.py` — a new, separate CLI
+
+A new entry point, deliberately not a modification of
+`run_real_photo.py`: `python3 run_trusted_swatch_from_photo.py
+path/to/photo.jpg [--repeats N] [--later-rows N] [--library path.json]`.
+Defaults match Phase 7's own test-repeat conventions (6 repeats, 3
+later rows). Importing this module never makes an API call — the real
+vision call only happens inside `main()`, which only runs when the
+file is executed directly (`if __name__ == "__main__":`). Prints each
+region's identification, resolution status, and either its rendered
+instructions or a clear "no trusted recipe available" message — never
+partial instructions, never a silent fallback to the old pathway's
+output, and never any secret or API key.
+
+### Coexistence with the old (v1) pathway — never cross-wired
+
+`run_real_photo.py`, `engine.confirmed_patterns`, `engine.swatch`,
+`engine.renderer`, and `data/confirmed_stitch_patterns.json` remain
+exactly as they were — Phase 8 does not import, call, extend, or read
+from any of them (confirmed by
+`tests/test_image_swatch_pipeline.py::OldPathwayUntouchedTests`, which
+parses `engine/image_swatch_pipeline.py`'s own import statements to
+verify this directly, not just by inspection). The two pathways share
+only one thing: `engine.vision.get_vision_proposal_from_photo()` itself,
+the identification-only call, reused unmodified by both. Everything
+downstream of that call is completely separate — v1's
+`get_stitch_recipe()` (untrusted, AI-authored instructions,
+`engine.confirmed_patterns`'s own binary confirmed-or-not check) is
+never called anywhere in the Phase 8 pathway, and the Phase 8 pathway's
+`resolve_stitch_identity()`/`data/confirmed_stitch_recipes_v2.json`
+trust boundary is never consulted by `run_real_photo.py`.
+
+### Current production state — honest, not a bug
+
+As of Phase 8, `data/confirmed_stitch_recipes_v2.json` has **zero**
+confirmed recipes (`{"schema_version": "2.0.0", "recipes": []}`,
+unchanged by this phase). This means a real run of
+`run_trusted_swatch_from_photo.py` against an actual photo, with no
+`--library` override, will currently and correctly report
+`no_trusted_recipe` for every region, no matter how confidently the AI
+identifies the stitch — this is the system telling the truth about
+what it actually knows, not a defect. The moment a recipe is
+physically confirmed and added to that file (via the existing
+confirmation workflow — outside Phase 8's scope), the exact same code
+path starts producing real, trusted instructions for it, with no code
+change required. All tests exercising a `trusted_match` outcome
+(`tests/test_recipe_library.py`, `tests/test_swatch_planner_v2.py`,
+`tests/test_image_swatch_pipeline.py`) do so against small, in-memory
+library fixtures passed explicitly as the `library` argument, clearly
+marked as test data — never against, and never by modifying, the real
+production file.
 
 ## Changelog — first correction pass
 
