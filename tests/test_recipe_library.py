@@ -33,6 +33,7 @@ from engine.recipe_library import (
     is_recipe_trusted,
     load_recipe_library,
     normalize_stitch_name,
+    resolve_stitch_identity,
     resolve_stitch_recipe,
     validate_recipe_library,
 )
@@ -574,6 +575,219 @@ class NoMutationTests(unittest.TestCase):
         find_recipe_by_name("mesh variant", library)
         find_recipe_by_name("nonexistent", library)
         self.assertEqual(library, before)
+
+
+# ---------------------------------------------------------------------------
+# Phase 8: resolve_stitch_identity() -- identity-only resolution, no AI
+# recipe involved at all (see engine/stitch_identification.py for the
+# contract this is meant to be called with).
+# ---------------------------------------------------------------------------
+
+TRUSTED_FILET_MESH = make_recipe("filet_mesh_v1", "Filet Mesh", aliases=["open filet mesh"], status="CONFIRMED")
+UNTRUSTED_GRANNY = make_recipe("granny_v1", "Granny Square", status="AI_PROPOSED")
+
+
+class ResolveStitchIdentityTrustedMatchTests(unittest.TestCase):
+    def test_trusted_match_by_name(self):
+        library = library_of(TRUSTED_FILET_MESH)
+        result = resolve_stitch_identity("filet mesh", library=library)
+        self.assertEqual(result["status"], STATUS_TRUSTED_MATCH)
+        self.assertTrue(result["trusted"])
+        self.assertIs(result["selected_recipe"], TRUSTED_FILET_MESH)
+        self.assertIs(result["matched_recipe"], TRUSTED_FILET_MESH)
+        self.assertEqual(result["provenance"], "library")
+        self.assertIsNone(result["conflicting_pattern_ids"])
+        self.assertTrue(result["reasons"])
+
+    def test_trusted_match_by_name_is_case_and_whitespace_insensitive(self):
+        library = library_of(TRUSTED_FILET_MESH)
+        result = resolve_stitch_identity("  FILET   Mesh ", library=library)
+        self.assertEqual(result["status"], STATUS_TRUSTED_MATCH)
+
+    def test_trusted_match_by_alias(self):
+        library = library_of(TRUSTED_FILET_MESH)
+        result = resolve_stitch_identity("some other name", aliases=["open filet mesh"], library=library)
+        self.assertEqual(result["status"], STATUS_TRUSTED_MATCH)
+        self.assertIs(result["selected_recipe"], TRUSTED_FILET_MESH)
+
+    def test_trusted_match_by_exact_pattern_id(self):
+        library = library_of(TRUSTED_FILET_MESH)
+        # A name that would not itself match, but an exact pattern_id does.
+        result = resolve_stitch_identity("totally different name", pattern_id="filet_mesh_v1", library=library)
+        self.assertEqual(result["status"], STATUS_TRUSTED_MATCH)
+        self.assertIs(result["selected_recipe"], TRUSTED_FILET_MESH)
+
+    def test_lookup_terms_recorded_in_order_pattern_id_then_name_then_aliases(self):
+        library = library_of(TRUSTED_FILET_MESH)
+        result = resolve_stitch_identity(
+            "filet mesh", aliases=["a", "b"], pattern_id="filet_mesh_v1", library=library
+        )
+        kinds = [t["kind"] for t in result["lookup_terms"]]
+        self.assertEqual(kinds, ["pattern_id", "name", "alias", "alias"])
+
+
+class ResolveStitchIdentityUntrustedMatchTests(unittest.TestCase):
+    def test_untrusted_match_when_matched_recipe_is_not_confirmed(self):
+        library = library_of(UNTRUSTED_GRANNY)
+        result = resolve_stitch_identity("granny square", library=library)
+        self.assertEqual(result["status"], STATUS_UNTRUSTED_MATCH)
+        self.assertFalse(result["trusted"])
+        self.assertIsNone(result["selected_recipe"])
+        self.assertIsNone(result["provenance"])
+        self.assertIs(result["matched_recipe"], UNTRUSTED_GRANNY)
+
+    def test_high_confidence_never_substitutes_for_a_confirmed_match(self):
+        # resolve_stitch_identity() has no confidence parameter at all --
+        # this test exists to document that omission is deliberate: there
+        # is no way to pass a "very sure" signal that would ever turn an
+        # untrusted match into a trusted one.
+        self.assertNotIn("confidence", resolve_stitch_identity.__code__.co_varnames[
+            :resolve_stitch_identity.__code__.co_argcount
+        ])
+
+
+class ResolveStitchIdentityNoMatchTests(unittest.TestCase):
+    def test_no_match_against_an_empty_library(self):
+        library = library_of()
+        result = resolve_stitch_identity("filet mesh", library=library)
+        self.assertEqual(result["status"], STATUS_NO_MATCH)
+        self.assertIsNone(result["selected_recipe"])
+        self.assertIsNone(result["matched_recipe"])
+        self.assertTrue(result["reasons"])
+
+    def test_no_match_against_the_real_production_library(self):
+        # As of Phase 8, data/confirmed_stitch_recipes_v2.json has zero
+        # confirmed recipes -- resolving against the real production
+        # library (library=None) must therefore return no_match, never
+        # error, and never fabricate a match.
+        result = resolve_stitch_identity("filet mesh")
+        self.assertEqual(result["status"], STATUS_NO_MATCH)
+        self.assertIsNone(result["selected_recipe"])
+
+    def test_unrelated_name_does_not_match(self):
+        library = library_of(TRUSTED_FILET_MESH)
+        result = resolve_stitch_identity("bobble stitch", library=library)
+        self.assertEqual(result["status"], STATUS_NO_MATCH)
+
+
+class ResolveStitchIdentityAmbiguousMatchTests(unittest.TestCase):
+    # A library that itself passed validate_recipe_library() can never
+    # contain an internally ambiguous name/alias (that's rejected at the
+    # trust boundary before resolution even starts -- see
+    # ResolveStitchIdentityTrustBoundaryTests). So the only way
+    # resolve_stitch_identity() can see two distinct matches is when the
+    # IDENTITY's own name and one of its own aliases independently match
+    # two different, individually-unambiguous library recipes -- exactly
+    # mirroring resolve_stitch_recipe()'s own documented ambiguity case.
+
+    def test_ambiguous_when_name_and_alias_independently_match_two_recipes(self):
+        recipe_a = make_recipe("a", "Mesh Stitch", status="CONFIRMED")
+        recipe_b = make_recipe("b", "Open Mesh", aliases=["filet mesh"], status="CONFIRMED")
+        library = library_of(recipe_a, recipe_b)
+        # identity's own name "mesh stitch" matches recipe_a; identity's
+        # own alias "filet mesh" independently matches recipe_b.
+        result = resolve_stitch_identity("mesh stitch", aliases=["filet mesh"], library=library)
+        self.assertEqual(result["status"], STATUS_AMBIGUOUS_MATCH)
+        self.assertIsNone(result["selected_recipe"])
+        self.assertEqual(sorted(result["conflicting_pattern_ids"]), ["a", "b"])
+        self.assertTrue(result["reasons"])
+
+    def test_ambiguous_never_silently_picks_the_first_match(self):
+        recipe_a = make_recipe("a", "Mesh Stitch", status="CONFIRMED")
+        recipe_b = make_recipe("b", "Open Mesh", aliases=["filet mesh"], status="CONFIRMED")
+        library = library_of(recipe_a, recipe_b)
+        result = resolve_stitch_identity("mesh stitch", aliases=["filet mesh"], library=library)
+        self.assertIsNone(result["selected_recipe"])
+        self.assertIsNone(result["matched_recipe"])
+
+
+class ResolveStitchIdentityArgumentValidationTests(unittest.TestCase):
+    def test_empty_stitch_name_raises_value_error(self):
+        library = library_of(TRUSTED_FILET_MESH)
+        with self.assertRaises(ValueError):
+            resolve_stitch_identity("", library=library)
+
+    def test_non_string_stitch_name_raises_value_error(self):
+        library = library_of(TRUSTED_FILET_MESH)
+        with self.assertRaises(ValueError):
+            resolve_stitch_identity(None, library=library)
+
+    def test_non_list_aliases_raises_value_error(self):
+        library = library_of(TRUSTED_FILET_MESH)
+        with self.assertRaises(ValueError):
+            resolve_stitch_identity("filet mesh", aliases="open filet mesh", library=library)
+
+    def test_aliases_with_non_string_entries_raises_value_error(self):
+        library = library_of(TRUSTED_FILET_MESH)
+        with self.assertRaises(ValueError):
+            resolve_stitch_identity("filet mesh", aliases=[5], library=library)
+
+    def test_non_string_pattern_id_raises_value_error(self):
+        library = library_of(TRUSTED_FILET_MESH)
+        with self.assertRaises(ValueError):
+            resolve_stitch_identity("filet mesh", pattern_id=5, library=library)
+
+    def test_argument_errors_are_never_recipe_library_error(self):
+        # A malformed identity ARGUMENT is a caller bug (ValueError), not
+        # a library problem (RecipeLibraryError) -- the two must never be
+        # conflated, since callers (plan_swatch_from_identification())
+        # handle them completely differently.
+        library = library_of(TRUSTED_FILET_MESH)
+        with self.assertRaises(ValueError):
+            try:
+                resolve_stitch_identity("", library=library)
+            except RecipeLibraryError:
+                self.fail("expected ValueError, not RecipeLibraryError")
+
+
+class ResolveStitchIdentityTrustBoundaryTests(unittest.TestCase):
+    def test_invalid_directly_supplied_library_raises_recipe_library_error(self):
+        broken_library = {"schema_version": "2.0.0", "recipes": [{"pattern_id": "x"}]}
+        with self.assertRaises(RecipeLibraryError):
+            resolve_stitch_identity("filet mesh", library=broken_library)
+
+    def test_a_library_claiming_confirmed_without_passing_validation_is_never_trusted(self):
+        # A hand-built dict claiming verification.status == CONFIRMED is
+        # not enough on its own -- if the library AROUND it is malformed,
+        # the whole call must raise, never quietly resolve against it.
+        malformed = {
+            "schema_version": "2.0.0",
+            "recipes": [
+                {"pattern_id": "x", "name": "fake", "verification": {"status": "CONFIRMED", "confirmations": []}}
+                # missing every other required v2 recipe field
+            ],
+        }
+        with self.assertRaises(RecipeLibraryError):
+            resolve_stitch_identity("fake", library=malformed)
+
+
+class ResolveStitchIdentityDoesNotMutateTests(unittest.TestCase):
+    def test_never_mutates_the_library(self):
+        library = library_of(TRUSTED_FILET_MESH, UNTRUSTED_GRANNY)
+        before = copy.deepcopy(library)
+        resolve_stitch_identity("filet mesh", library=library)
+        resolve_stitch_identity("granny square", library=library)
+        resolve_stitch_identity("nonexistent", library=library)
+        self.assertEqual(library, before)
+
+
+class ResolveStitchIdentityNeverPromotesOrInventsTests(unittest.TestCase):
+    def test_never_promotes_an_untrusted_match_to_confirmed(self):
+        library = library_of(UNTRUSTED_GRANNY)
+        resolve_stitch_identity("granny square", library=library)
+        # Re-fetch and confirm the library's own recipe object was never
+        # mutated to CONFIRMED as a side effect of resolution.
+        self.assertEqual(library["recipes"][0]["verification"]["status"], "AI_PROPOSED")
+
+    def test_resolve_stitch_recipe_is_untouched_by_this_addition(self):
+        # resolve_stitch_recipe() (Phase 6) must keep working exactly as
+        # before -- this is a lightweight spot check; the full existing
+        # test_recipe_library.py suite above is the authoritative check.
+        library = library_of(TRUSTED_FILET_MESH)
+        ai_proposal = make_recipe("ai_guess", "filet mesh", status="AI_PROPOSED")
+        result = resolve_stitch_recipe(ai_proposal, library)
+        self.assertEqual(result["status"], STATUS_TRUSTED_MATCH)
+        self.assertIs(result["selected_recipe"], TRUSTED_FILET_MESH)
 
 
 # ---------------------------------------------------------------------------
