@@ -4,6 +4,11 @@ read it, validate it, size it, and check an AI proposal against the
 validator.
 """
 
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from engine.pattern_reader import read_row, read_full_row
 from engine.validator import check_full_row
 from engine.sizing import find_valid_stitch_count, greedy_stitch_count

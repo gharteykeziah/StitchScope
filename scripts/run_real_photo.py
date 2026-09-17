@@ -28,10 +28,13 @@ main.py's demo (which uses free, hardcoded stand-in data and needs no
 API key) so that demo keeps running instantly with no network access
 or credentials required.
 
-Usage: python3 run_real_photo.py path/to/photo.jpg
+Usage: python3 scripts/run_real_photo.py path/to/photo.jpg
 """
 
+import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from engine.confirmed_patterns import check_against_confirmed, get_confirmed_recipe
 from engine.plausibility import check_setup_not_oversized, run_plausibility_checks
@@ -153,7 +156,7 @@ def report_region(region):
 
 def main():
     if len(sys.argv) != 2:
-        print("Usage: python3 run_real_photo.py <path-to-photo>")
+        print("Usage: python3 scripts/run_real_photo.py <path-to-photo>")
         sys.exit(1)
 
     image_path = sys.argv[1]

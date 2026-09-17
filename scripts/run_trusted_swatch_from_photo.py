@@ -26,14 +26,17 @@ merely by being imported; the real call only happens inside main(),
 which only runs when this file is executed directly.
 
 Usage:
-    python3 run_trusted_swatch_from_photo.py path/to/photo.jpg
-    python3 run_trusted_swatch_from_photo.py path/to/photo.jpg --repeats 6 --later-rows 3
-    python3 run_trusted_swatch_from_photo.py path/to/photo.jpg --library path/to/alt_library.json
+    python3 scripts/run_trusted_swatch_from_photo.py path/to/photo.jpg
+    python3 scripts/run_trusted_swatch_from_photo.py path/to/photo.jpg --repeats 6 --later-rows 3
+    python3 scripts/run_trusted_swatch_from_photo.py path/to/photo.jpg --library path/to/alt_library.json
 """
 
 import argparse
 import json
+import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from engine.image_swatch_pipeline import STATUS_PROCESSED, generate_swatch_from_image
 

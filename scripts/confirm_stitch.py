@@ -7,12 +7,15 @@ the stitch first; that's what populates the proposal this script pulls
 from.
 
 Usage:
-  python3 confirm_stitch.py "double crochet mesh" --photo IMG_2413.jpg \
+  python3 scripts/confirm_stitch.py "double crochet mesh" --photo IMG_2413.jpg \
       --note "matched the halter mesh panel exactly"
 """
 
 import argparse
+import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from engine.confirmed_patterns import (
     ConfirmationConflictError,
