@@ -91,3 +91,7 @@ python3 -m unittest discover -s tests
 ## Status
 
 This is an active build, not a finished product. `docs/roadmap.md` and `docs/recipe_model_v2.md` track what's physically confirmed, what's still AI-only (and therefore untrusted), and what's next.
+
+## Author
+
+Built by **Keziah Aba Ghartey** -- [@gharteykeziah](https://github.com/gharteykeziah) -- [LinkedIn](https://linkedin.com/in/keziah-aba-ghartey)
